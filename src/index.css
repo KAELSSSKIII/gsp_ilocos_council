@@ -1,0 +1,113 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Definition of the design system. All colors, gradients, fonts, etc should be defined here. 
+All colors MUST be HSL.
+*/
+
+@layer base {
+  :root {
+    /* Girl Scout Green & Cream Palette */
+    --background: 42 35% 96%;
+    --foreground: 152 50% 15%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 152 50% 15%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 152 50% 15%;
+
+    /* Girl Scout Forest Green */
+    --primary: 152 85% 15%;
+    --primary-foreground: 42 35% 96%;
+
+    /* Cream accent */
+    --secondary: 42 40% 92%;
+    --secondary-foreground: 152 50% 15%;
+
+    --muted: 42 30% 90%;
+    --muted-foreground: 152 20% 40%;
+
+    /* Gold accent */
+    --accent: 45 90% 55%;
+    --accent-foreground: 152 85% 15%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 42 35% 96%;
+
+    --border: 42 30% 85%;
+    --input: 42 30% 85%;
+    --ring: 152 85% 15%;
+
+    --radius: 0.5rem;
+
+    /* Sidebar - Girl Scout Green theme */
+    --sidebar-background: 152 85% 15%;
+    --sidebar-foreground: 42 35% 96%;
+    --sidebar-primary: 45 90% 55%;
+    --sidebar-primary-foreground: 152 85% 15%;
+    --sidebar-accent: 152 75% 20%;
+    --sidebar-accent-foreground: 42 35% 96%;
+    --sidebar-border: 152 70% 20%;
+    --sidebar-ring: 45 90% 55%;
+
+    /* Custom metrics colors */
+    --success: 142 76% 36%;
+    --warning: 38 92% 50%;
+    --info: 199 89% 48%;
+  }
+
+  .dark {
+    --background: 152 50% 8%;
+    --foreground: 42 35% 96%;
+
+    --card: 152 45% 12%;
+    --card-foreground: 42 35% 96%;
+
+    --popover: 152 45% 12%;
+    --popover-foreground: 42 35% 96%;
+
+    --primary: 45 90% 55%;
+    --primary-foreground: 152 85% 15%;
+
+    --secondary: 152 40% 18%;
+    --secondary-foreground: 42 35% 96%;
+
+    --muted: 152 35% 20%;
+    --muted-foreground: 42 25% 70%;
+
+    --accent: 45 90% 55%;
+    --accent-foreground: 152 85% 15%;
+
+    --destructive: 0 62% 30%;
+    --destructive-foreground: 42 35% 96%;
+
+    --border: 152 35% 20%;
+    --input: 152 35% 20%;
+    --ring: 45 90% 55%;
+
+    --sidebar-background: 152 85% 15%;
+    --sidebar-foreground: 42 35% 96%;
+    --sidebar-primary: 45 90% 55%;
+    --sidebar-primary-foreground: 152 85% 15%;
+    --sidebar-accent: 152 75% 20%;
+    --sidebar-accent-foreground: 42 35% 96%;
+    --sidebar-border: 152 70% 20%;
+    --sidebar-ring: 45 90% 55%;
+
+    --success: 142 76% 36%;
+    --warning: 38 92% 50%;
+    --info: 199 89% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+}
