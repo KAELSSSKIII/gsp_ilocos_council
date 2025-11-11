@@ -46,6 +46,8 @@ export interface ReceiptData {
   voidReason?: string | null;
   receiptNumber?: number | null;
   receiptIssuedAt?: string | null;
+  cashierId?: string | null;
+  cashierName?: string | null;
 }
 
 export interface ReceiptHistoryItem {
@@ -59,6 +61,8 @@ export interface ReceiptHistoryItem {
   voidReason?: string | null;
   receiptNumber?: number | null;
   receiptIssuedAt?: string | null;
+  cashierId?: string | null;
+  cashierName?: string | null;
   payload: ReceiptData;
 }
 

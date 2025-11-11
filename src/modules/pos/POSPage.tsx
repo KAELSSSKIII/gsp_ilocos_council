@@ -212,9 +212,9 @@ export function POSPage() {
           format: "CODE128",
           displayValue: false,
           lineColor: "#000000",
-          width: 2,
-          height: 80,
-          margin: 0
+          width: 1.8,
+          height: 70,
+          margin: 6
         });`;
       })
       .join("\n");
@@ -236,8 +236,8 @@ export function POSPage() {
             }
             .grid {
               display: grid;
-              grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-              gap: 16px;
+              grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+              gap: 20px;
             }
             .barcode-card {
               background: #ffffff;
@@ -249,6 +249,7 @@ export function POSPage() {
               align-items: center;
               gap: 12px;
               box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
+              page-break-inside: avoid;
             }
             .barcode-card h2 {
               margin: 0;
@@ -262,6 +263,18 @@ export function POSPage() {
               letter-spacing: 0.12em;
               text-transform: uppercase;
               color: #475569;
+            }
+            .barcode-card svg {
+              width: 100%;
+              max-width: 100%;
+            }
+            @media print {
+              body {
+                padding: 12px;
+              }
+              .grid {
+                gap: 16px;
+              }
             }
           </style>
         </head>

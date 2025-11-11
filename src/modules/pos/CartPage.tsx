@@ -528,8 +528,10 @@ export function CartPage() {
   const normalizeSaleNumber = useCallback((value: string) => {
     const trimmed = value.trim();
     if (!trimmed) return "";
+    const cleaned = trimmed.replace(/^#/, "");
     const uuidPattern = /^[0-9a-fA-F-]{36}$/;
-    return uuidPattern.test(trimmed) ? trimmed : trimmed.toUpperCase();
+    if (uuidPattern.test(cleaned)) return cleaned;
+    return cleaned.toUpperCase();
   }, []);
 
   const persistReceiptSnapshot = useCallback(
@@ -713,29 +715,70 @@ export function CartPage() {
         }
 
         const storedSaleNumber = stored.saleNumber ? normalizeSaleNumber(stored.saleNumber) : null;
-        if (storedSaleNumber && storedSaleNumber !== code && normalizeSaleNumber(stored.saleId) !== code) {
+        const storedReceiptNumber =
+          stored.receiptNumber != null ? normalizeSaleNumber(String(stored.receiptNumber)) : null;
+        if (
+          storedSaleNumber &&
+          storedSaleNumber !== code &&
+          normalizeSaleNumber(stored.saleId) !== code &&
+          (!storedReceiptNumber || storedReceiptNumber !== code)
+        ) {
           setReprintError("Only the most recent receipt is available in demo mode.");
           setIsReprintLoading(false);
           return;
         }
 
+        const normalizedStored: ReceiptData = {
+          ...stored,
+          cashierId: stored.cashierId ?? profile?.id ?? null,
+          cashierName: stored.cashierName ?? profile?.full_name ?? profile?.id ?? null,
+        };
         setShouldRedirectAfterReceipt(false);
-        setReceiptData(stored);
+        setReceiptData(normalizedStored);
         setIsReceiptOpen(true);
         setIsReprintDialogOpen(false);
         setIsReprintLoading(false);
         return;
       }
 
-      let receiptQuery = supabase.from("sale_receipts").select("payload");
+      let receiptQuery = supabase
+        .from("sale_receipts")
+        .select(
+          `
+            payload,
+            cashier_id,
+            cashier:profiles!sale_receipts_cashier_id_fkey(full_name)
+          `
+        )
+        .limit(1);
       const uuidPattern = /^[0-9a-fA-F-]{36}$/;
+      const numericPattern = /^\d+$/;
       if (uuidPattern.test(code)) {
         receiptQuery = receiptQuery.or(`sale_id.eq.${code},sale_number.eq.${code}`);
       } else {
         receiptQuery = receiptQuery.eq("sale_number", code);
       }
 
-      const { data, error } = await receiptQuery.maybeSingle();
+      let { data, error } = await receiptQuery.maybeSingle();
+
+      if (!data && !error && numericPattern.test(code)) {
+        const fallback = await supabase
+          .from("sale_receipts")
+          .select(
+            `
+              payload,
+              cashier_id,
+              cashier:profiles!sale_receipts_cashier_id_fkey(full_name)
+            `
+          )
+          .filter("payload->>receiptNumber", "eq", code)
+          .limit(1)
+          .maybeSingle();
+        data = fallback.data;
+        if (!error) {
+          error = fallback.error;
+        }
+      }
 
       if (error) throw error;
 
@@ -746,9 +789,17 @@ export function CartPage() {
       }
 
       const payload = data.payload as unknown as ReceiptData;
+      const cashierNameFromJoin = Array.isArray((data as any)?.cashier)
+        ? (data as any).cashier[0]?.full_name
+        : (data as any).cashier?.full_name;
+      const normalizedPayload: ReceiptData = {
+        ...payload,
+        cashierId: payload.cashierId ?? data?.cashier_id ?? null,
+        cashierName: payload.cashierName ?? cashierNameFromJoin ?? null,
+      };
       setShouldRedirectAfterReceipt(false);
-      setReceiptData(payload);
-      writeLocalReceipt(payload);
+      setReceiptData(normalizedPayload);
+      writeLocalReceipt(normalizedPayload);
       setIsReceiptOpen(true);
       setIsReprintDialogOpen(false);
     } catch (error) {
@@ -1014,6 +1065,8 @@ export function CartPage() {
         thankYouMessage: clientNameSnapshot ? `Thank you, ${clientNameSnapshot}!` : undefined,
         receiptNumber: receiptNumberUsed,
         receiptIssuedAt: (receiptIssuedDateUsed ?? timestamp).slice(0, 10),
+        cashierId: profile?.id ?? null,
+        cashierName: profile?.full_name ?? profile?.id ?? null,
       };
 
       setReceiptData(receiptPayload);
@@ -1167,6 +1220,8 @@ export function CartPage() {
           saleRecord.receipt_issued_at ??
           timestamp
         ).slice(0, 10),
+        cashierId: user.id,
+        cashierName: profile?.full_name ?? user.email ?? user.id ?? null,
       };
 
       setReceiptData(receiptSnapshot);
@@ -1783,6 +1838,12 @@ export function CartPage() {
                   <span className="text-right font-medium">
                     {receiptData.saleNumber ?? receiptData.saleId}
                   </span>
+                  {receiptData.cashierName ? (
+                    <>
+                      <span className="text-muted-foreground">Cashier</span>
+                      <span className="text-right font-medium">{receiptData.cashierName}</span>
+                    </>
+                  ) : null}
                   {typeof receiptData.receiptNumber === "number" ? (
                     <>
                       <span className="text-muted-foreground">Receipt #</span>
