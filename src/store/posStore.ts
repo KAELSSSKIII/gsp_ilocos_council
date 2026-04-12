@@ -1,5 +1,6 @@
 import { create } from "zustand";
-import { devtools } from "zustand/middleware";
+import { devtools, persist, createJSONStorage } from "zustand/middleware";
+import { readBusinessSettings } from "@/utils/businessSettings";
 
 export interface POSCartItem {
   id: string;
@@ -11,6 +12,8 @@ export interface POSCartItem {
   maxQuantity: number;
   categoryId?: string | null;
   categoryName?: string | null;
+  isRental?: boolean;
+  rentalSpaceId?: string | null;
   rentalDate?: string | null;
   customization?: {
     embroideryName?: string;
@@ -43,7 +46,6 @@ interface POSState {
   cart: POSCartItem[];
   discountRate: number;
   taxRate: number;
-  heldCarts: Record<string, POSCartItem[]>;
   paymentMethod: PaymentMethod;
   member: POSMember | null;
   rentalDiscountType: RentalDiscountType;
@@ -52,8 +54,6 @@ interface POSState {
   updateQuantity: (id: string, quantity: number) => void;
   clearCart: () => void;
   setCart: (items: POSCartItem[]) => void;
-  holdCurrentCart: (label: string) => void;
-  resumeHeldCart: (label: string) => void;
   setDiscountRate: (value: number) => void;
   setTaxRate: (value: number) => void;
   setPaymentMethod: (method: PaymentMethod) => void;
@@ -61,15 +61,16 @@ interface POSState {
   clearMember: () => void;
   setRentalDiscountType: (type: RentalDiscountType) => void;
   setItemRentalDate: (id: string, date: string | null) => void;
-  totals: () => { subtotal: number; discount: number; tax: number; total: number };
+  totals: () => { subtotal: number; discount: number; rentalDiscount: number; memberDiscount: number; tax: number; total: number };
 }
 
 export const usePOSStore = create<POSState>()(
-  devtools((set, get) => ({
+  devtools(
+    persist(
+      (set, get) => ({
     cart: [],
     discountRate: 0,
-    taxRate: 0.12,
-    heldCarts: {},
+    taxRate: readBusinessSettings().taxRate,
     paymentMethod: "cash",
     member: null,
     rentalDiscountType: "none",
@@ -85,6 +86,8 @@ export const usePOSStore = create<POSState>()(
                 ? {
                     ...item,
                     quantity: mergedQuantity,
+                    isRental: incoming.isRental ?? item.isRental ?? false,
+                    rentalSpaceId: incoming.rentalSpaceId ?? item.rentalSpaceId ?? null,
                     rentalDate: incoming.rentalDate ?? item.rentalDate ?? null,
                   }
                 : item
@@ -97,6 +100,8 @@ export const usePOSStore = create<POSState>()(
             ...state.cart,
             {
               ...incoming,
+              isRental: incoming.isRental ?? false,
+              rentalSpaceId: incoming.rentalSpaceId ?? null,
               rentalDate: incoming.rentalDate ?? null,
             },
           ],
@@ -117,25 +122,12 @@ export const usePOSStore = create<POSState>()(
     setCart: (items) =>
       set((state) => ({
         ...state,
-        cart: items.map((item) => ({
-          ...item,
-          rentalDate: item.rentalDate ?? null,
-        })),
-      })),
-    holdCurrentCart: (label) =>
-      set((state) => ({
-        ...state,
-        heldCarts: {
-          ...state.heldCarts,
-          [label]: state.cart,
-        },
-        cart: [],
-      })),
-    resumeHeldCart: (label) =>
-      set((state) => ({
-        ...state,
-        cart: state.heldCarts[label] ?? [],
-        heldCarts: Object.fromEntries(Object.entries(state.heldCarts).filter(([key]) => key !== label)),
+          cart: items.map((item) => ({
+            ...item,
+            isRental: item.isRental ?? false,
+            rentalSpaceId: item.rentalSpaceId ?? null,
+            rentalDate: item.rentalDate ?? null,
+          })),
       })),
     setDiscountRate: (value) =>
       set((state) => ({
@@ -163,34 +155,45 @@ export const usePOSStore = create<POSState>()(
       set((state) => ({
         ...state,
         rentalDiscountType: type,
-        discountRate: RENTAL_DISCOUNT_RATES[type],
+        discountRate: type === "none" ? 0 : readBusinessSettings().rentalDiscountRate,
       })),
     totals: () => {
-      const RENTAL_CATEGORIES = new Set([
-        "Hall Rental".toLowerCase(),
-        "Room Rental".toLowerCase(),
-        "Hall & Room Rental".toLowerCase(),
-        "Hall & Room Rentals".toLowerCase(),
-      ]);
-
       const subtotal = get().cart.reduce((sum, item) => sum + item.price * item.quantity, 0);
 
       const rentalBase = get().cart
-        .filter((item) =>
-          item.categoryName ? RENTAL_CATEGORIES.has(item.categoryName.toLowerCase()) : false
-        )
+        .filter((item) => item.isRental || item.rentalSpaceId)
         .reduce((sum, item) => sum + item.price * item.quantity, 0);
 
-      const discount = rentalBase * get().discountRate;
-      const taxable = subtotal - discount;
+      const nonRentalBase = subtotal - rentalBase;
+
+      const rentalDiscount = rentalBase * get().discountRate;
+      const memberRate = get().member?.discountRate ?? 0;
+      const memberDiscount = nonRentalBase * memberRate;
+
+      const totalDiscount = rentalDiscount + memberDiscount;
+      const taxable = subtotal - totalDiscount;
       const tax = taxable * get().taxRate;
       return {
         subtotal,
-        discount,
+        discount: totalDiscount,
+        rentalDiscount,
+        memberDiscount,
         tax,
         total: taxable + tax,
       };
     },
-  }))
+  }),
+      {
+        name: "gsp-pos-store",
+        storage: createJSONStorage(() => localStorage),
+        partialize: (state) => ({
+          cart: state.cart,
+          member: state.member,
+          discountRate: state.discountRate,
+          rentalDiscountType: state.rentalDiscountType,
+          paymentMethod: state.paymentMethod,
+        }),
+      }
+    )
+  )
 );
-

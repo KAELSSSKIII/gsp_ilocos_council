@@ -9,6 +9,10 @@ export type ProductRow = {
   category_id?: string | null;
   is_active: boolean;
   image_url?: string | null;
+  is_rental?: boolean;
+  rental_space_id?: string | null;
+  rental_space_type?: "hall" | "room" | null;
+  reorder_level?: number | null;
 };
 
 export type CategoryRow = {
@@ -24,6 +28,7 @@ export interface ReceiptItemData {
   subtotal: number;
   sku?: string;
   cost?: number;
+  rentalDate?: string | null;
 }
 
 export interface ReceiptData {
@@ -36,6 +41,8 @@ export interface ReceiptData {
   discount: number;
   tax: number;
   total: number;
+  depositAmount?: number | null;   // amount collected at booking time (deposit/initial payment)
+  balanceDue?: number | null;      // remaining owed; null means fully paid
   items: ReceiptItemData[];
   memberName?: string;
   memberEmail?: string | null;
@@ -48,6 +55,15 @@ export interface ReceiptData {
   receiptIssuedAt?: string | null;
   cashierId?: string | null;
   cashierName?: string | null;
+  cashTendered?: number | null;
+  change?: number | null;
+  // BIR invoice customer fields
+  soldTo?: string | null;
+  customerTin?: string | null;
+  customerAddress?: string | null;
+  businessStyle?: string | null;
+  term?: string | null;
+  invoiceType?: "sales" | "service";
 }
 
 export interface ReceiptHistoryItem {

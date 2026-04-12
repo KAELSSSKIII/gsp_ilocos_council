@@ -1,26 +1,44 @@
-import { useEffect, useMemo } from "react";
-import { useQueryClient } from "@tanstack/react-query";
-import { isSupabaseConfigured, supabase } from "@/integrations/supabase/client";
-import { useSupabaseQuery } from "@/hooks/useSupabaseQuery";
-import { Database } from "@/integrations/supabase/types";
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
+import api from "@/lib/api";
 import { readLocalRentalBookings, LocalRentalBooking } from "@/modules/pos/utils/rentalBookingsStorage";
 import { demoProducts } from "@/utils/demo-data";
-import { ReceiptData } from "@/modules/pos/types";
+import type { ReceiptData } from "@/modules/pos/types";
 
-type RentalSpaceRow = Database["public"]["Tables"]["rental_spaces"]["Row"];
-type RentalBookingRow = Database["public"]["Tables"]["rental_bookings"]["Row"];
+// ─── Types (replaces Database["public"]["Tables"][*]["Row"]) ──────────────────
 
-export type RentalSpaceSummary = Pick<
-  RentalSpaceRow,
-  "id" | "name" | "rental_type" | "product_id" | "base_rate" | "rate_unit" | "is_active"
->;
+export type RentalSpaceSummary = {
+  id: string;
+  name: string;
+  rental_type: "hall" | "room";
+  product_id: string | null;
+  product_category_id?: string | null;
+  base_rate: number;
+  rate_unit: string;
+  description?: string | null;
+  capacity?: number | null;
+  is_active: boolean;
+};
 
-export type RentalBookingSummary = Pick<
-  RentalBookingRow,
-  "id" | "rental_space_id" | "booking_date" | "status" | "sale_id" | "notes" | "created_at" | "updated_at"
-> & {
+export type RentalBookingSummary = {
+  id: string;
+  rental_space_id: string;
+  booking_date: string;
+  status: string;
+  sale_id: string | null;
+  notes: string | null;
+  created_at: string;
+  updated_at: string;
+  // Payment tracking — NULL for bookings created before this feature
+  total_amount: number | null;
+  initial_payment: number | null;
+  payment_status: "paid" | "partial" | "unpaid" | null;
+  balance_sale_id: string | null;
+  // Enriched client-side
   customer_name?: string | null;
 };
+
+// ─── Demo data fallback ───────────────────────────────────────────────────────
 
 const demoRentalSpaces: RentalSpaceSummary[] = [
   {
@@ -28,8 +46,11 @@ const demoRentalSpaces: RentalSpaceSummary[] = [
     name: "Main Function Hall",
     rental_type: "hall",
     product_id: "demo-hall-rental",
+    product_category_id: null,
     base_rate: 1500,
     rate_unit: "per_day",
+    description: "Large event-ready hall.",
+    capacity: 150,
     is_active: true,
   },
   {
@@ -37,8 +58,11 @@ const demoRentalSpaces: RentalSpaceSummary[] = [
     name: "Meeting Room",
     rental_type: "room",
     product_id: "demo-room-rental",
+    product_category_id: null,
     base_rate: 800,
     rate_unit: "per_day",
+    description: "Private meeting room.",
+    capacity: 30,
     is_active: true,
   },
 ];
@@ -52,182 +76,153 @@ const normalizeLocalBooking = (booking: LocalRentalBooking): RentalBookingSummar
   notes: booking.notes ?? null,
   created_at: booking.created_at,
   updated_at: booking.updated_at,
+  total_amount: null,
+  initial_payment: null,
+  payment_status: null,
+  balance_sale_id: null,
   customer_name: booking.notes ?? null,
 });
 
+const ensureDemoSpaces = (): RentalSpaceSummary[] => {
+  const rentalProductIds = new Set(
+    demoProducts
+      .filter((p) => p.category?.toLowerCase().includes("rental"))
+      .map((p) => p.id)
+  );
+  return demoRentalSpaces.map((space, index) => ({
+    ...space,
+    product_id:
+      space.product_id && rentalProductIds.has(space.product_id)
+        ? space.product_id
+        : Array.from(rentalProductIds)[index] ?? null,
+  }));
+};
+
+// ─── Fetch helpers ────────────────────────────────────────────────────────────
+
 const fetchRentalSpaces = async (): Promise<RentalSpaceSummary[]> => {
-  const { data, error } = await supabase
-    .from("rental_spaces")
-    .select("id,name,rental_type,product_id,base_rate,rate_unit,is_active")
-    .eq("is_active", true)
-    .order("display_order", { ascending: true });
-  if (error) throw error;
-  return (data ?? []) as RentalSpaceSummary[];
+  try {
+    const { spaces } = await api.get<{ spaces: RentalSpaceSummary[] }>("/rental/spaces");
+    return spaces ?? [];
+  } catch {
+    return [];
+  }
 };
 
 const fetchRentalBookings = async (): Promise<RentalBookingSummary[]> => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const minDate = new Date(today);
+  const minDate = new Date();
   minDate.setDate(minDate.getDate() - 30);
-  const { data, error } = await supabase
-    .from("rental_bookings")
-    .select("id,rental_space_id,booking_date,status,sale_id,notes,created_at,updated_at")
-    .gte("booking_date", minDate.toISOString().slice(0, 10))
-    .order("booking_date", { ascending: true });
-  if (error) throw error;
-  const bookings = (data ?? []) as RentalBookingRow[];
+  const from = minDate.toISOString().slice(0, 10);
+
+  let bookings: Omit<RentalBookingSummary, "customer_name">[] = [];
+  try {
+    const response = await api.get<{
+      bookings: Omit<RentalBookingSummary, "customer_name">[];
+    }>(`/rental/bookings?from=${from}`);
+    bookings = response.bookings ?? [];
+  } catch {
+    return readLocalRentalBookings().map(normalizeLocalBooking);
+  }
+
+  const rawBookings = bookings ?? [];
+
+  // Enrich bookings with customer name from sale receipts
   const saleIds = Array.from(
-    new Set(
-      bookings
-        .map((booking) => booking.sale_id)
-        .filter((value): value is string => Boolean(value))
-    )
+    new Set(rawBookings.map((b) => b.sale_id).filter((id): id is string => Boolean(id)))
   );
 
   let receiptMap = new Map<string, ReceiptData>();
   if (saleIds.length) {
-    const { data: receipts, error: receiptsError } = await supabase
-      .from("sale_receipts")
-      .select("sale_id,payload")
-      .in("sale_id", saleIds);
-    if (receiptsError) throw receiptsError;
-    (receipts ?? []).forEach((record: any) => {
-      if (record?.sale_id && record?.payload) {
-        receiptMap.set(record.sale_id, record.payload as ReceiptData);
-      }
-    });
+    try {
+      const { receipts } = await api.get<{ receipts: { sale_id: string; payload: ReceiptData }[] }>(
+        `/sales/receipts?sale_ids=${saleIds.join(",")}`
+      );
+      (receipts ?? []).forEach((r) => {
+        if (r?.sale_id && r?.payload) receiptMap.set(r.sale_id, r.payload);
+      });
+    } catch {
+      receiptMap = new Map<string, ReceiptData>();
+    }
   }
 
-  return bookings.map((booking) => ({
-    id: booking.id,
-    rental_space_id: booking.rental_space_id,
-    booking_date: booking.booking_date,
-    status: booking.status,
-    sale_id: booking.sale_id ?? null,
-    notes: booking.notes ?? null,
-    created_at: booking.created_at,
-    updated_at: booking.updated_at,
+  return rawBookings.map((b) => ({
+    ...b,
     customer_name:
-      (booking.sale_id ? receiptMap.get(booking.sale_id)?.memberName ?? null : null) ??
-      booking.notes ??
+      (b.sale_id ? (receiptMap.get(b.sale_id) as ReceiptData | undefined)?.memberName ?? null : null) ??
+      b.notes ??
       null,
   }));
 };
 
-const ensureDemoSpaces = () => {
-  const rentalProductIds = new Set(
-    demoProducts
-      .filter((product) => product.category?.toLowerCase().includes("rental"))
-      .map((product) => product.id)
-  );
-  return demoRentalSpaces.map((space, index) => ({
-    ...space,
-    product_id: space.product_id && rentalProductIds.has(space.product_id) ? space.product_id : Array.from(rentalProductIds)[index] ?? null,
-  }));
-};
+// ─── Hook ─────────────────────────────────────────────────────────────────────
 
 export function useRentalAvailability() {
-  const queryClient = useQueryClient();
+  // Polling every 15 seconds replaces Supabase Realtime channel subscriptions
+  const POLL_INTERVAL = 15_000;
 
   const {
     data: spacesData,
     isLoading: loadingSpaces,
     refetch: refetchSpaces,
-  } = useSupabaseQuery(["rental-spaces"], fetchRentalSpaces, { enabled: isSupabaseConfigured });
+  } = useQuery({
+    queryKey: ["rental-spaces"],
+    queryFn: fetchRentalSpaces,
+    staleTime: 1000 * 60,
+    refetchOnWindowFocus: true,
+    refetchInterval: POLL_INTERVAL,
+  });
 
   const {
     data: bookingsData,
     isLoading: loadingBookings,
     refetch: refetchBookings,
-  } = useSupabaseQuery(["rental-bookings"], fetchRentalBookings, { enabled: isSupabaseConfigured });
+  } = useQuery({
+    queryKey: ["rental-bookings"],
+    queryFn: fetchRentalBookings,
+    staleTime: 1000 * 30,
+    refetchOnWindowFocus: true,
+    refetchInterval: POLL_INTERVAL,
+  });
 
-  useEffect(() => {
-    if (!isSupabaseConfigured) return;
-    const channel = supabase
-      .channel("rental_bookings_changes")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "rental_bookings",
-        },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ["rental-bookings"] });
-        }
-      )
-      .subscribe();
+  const spaces: RentalSpaceSummary[] = useMemo(
+    () => spacesData ?? ensureDemoSpaces(),
+    [spacesData]
+  );
 
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [queryClient]);
-
-  useEffect(() => {
-    if (!isSupabaseConfigured) return;
-    const channel = supabase
-      .channel("rental_spaces_changes")
-      .on(
-        "postgres_changes",
-        {
-          event: "*",
-          schema: "public",
-          table: "rental_spaces",
-        },
-        () => {
-          queryClient.invalidateQueries({ queryKey: ["rental-spaces"] });
-        }
-      )
-      .subscribe();
-
-    return () => {
-      supabase.removeChannel(channel);
-    };
-  }, [queryClient]);
-
-  const spaces: RentalSpaceSummary[] = useMemo(() => {
-    if (isSupabaseConfigured) {
-      return spacesData ?? [];
-    }
-    return ensureDemoSpaces();
-  }, [spacesData]);
-
-  const bookings: RentalBookingSummary[] = useMemo(() => {
-    if (isSupabaseConfigured) {
-      return bookingsData ?? [];
-    }
-    return readLocalRentalBookings().map(normalizeLocalBooking);
-  }, [bookingsData]);
+  const bookings: RentalBookingSummary[] = useMemo(
+    () => bookingsData ?? readLocalRentalBookings().map(normalizeLocalBooking),
+    [bookingsData]
+  );
 
   const confirmedBookings = useMemo(
-    () => bookings.filter((booking) => booking.status === "confirmed"),
+    () => bookings.filter((b) => b.status === "confirmed"),
     [bookings]
   );
 
   const bookingsBySpace = useMemo(() => {
     const map = new Map<string, RentalBookingSummary[]>();
-    confirmedBookings.forEach((booking) => {
-      const existing = map.get(booking.rental_space_id) ?? [];
-      existing.push(booking);
-      map.set(booking.rental_space_id, existing);
+    confirmedBookings.forEach((b) => {
+      const existing = map.get(b.rental_space_id) ?? [];
+      existing.push(b);
+      map.set(b.rental_space_id, existing);
     });
     return map;
   }, [confirmedBookings]);
 
   const bookingsByDate = useMemo(() => {
     const map = new Map<string, RentalBookingSummary[]>();
-    confirmedBookings.forEach((booking) => {
-      const existing = map.get(booking.booking_date) ?? [];
-      existing.push(booking);
-      map.set(booking.booking_date, existing);
+    confirmedBookings.forEach((b) => {
+      const key = b.booking_date.slice(0, 10); // normalize "2026-03-06T00:00:00.000Z" → "2026-03-06"
+      const existing = map.get(key) ?? [];
+      existing.push(b);
+      map.set(key, existing);
     });
     return map;
   }, [confirmedBookings]);
 
   const bookedDateSet = useMemo(() => {
     const set = new Set<string>();
-    confirmedBookings.forEach((booking) => set.add(booking.booking_date));
+    confirmedBookings.forEach((b) => set.add(b.booking_date));
     return set;
   }, [confirmedBookings]);
 
@@ -238,11 +233,9 @@ export function useRentalAvailability() {
     bookingsBySpace,
     bookingsByDate,
     bookedDateSet,
-    isSupabaseConfigured,
+    isSupabaseConfigured: true, // kept for API compatibility with existing consumers
     isLoading: loadingSpaces || loadingBookings,
     refetchSpaces,
     refetchBookings,
   };
 }
-
-

@@ -1,303 +1,140 @@
-import { useEffect, useMemo, useState, useCallback, FormEvent } from "react";
+import { useEffect, useMemo, useState, useCallback, FormEvent, useRef, useDeferredValue } from "react";
 import { useNavigate } from "react-router-dom";
-import { useQuery } from "@tanstack/react-query";
+
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Label } from "@/components/ui/label";
-import { ScanBarcode } from "lucide-react";
+import { ScanBarcode, Loader2 } from "lucide-react";
 import { toast } from "sonner";
-import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
+import api from "@/lib/api";
 import { usePOSStore } from "@/store/posStore";
-import { useSessionStore, selectProfile } from "@/store/sessionStore";
-import { demoProducts } from "@/utils/demo-data";
 import { POSHeader } from "@/modules/pos/components/POSHeader";
 import { ProductGrid } from "@/modules/pos/components/ProductGrid";
 import { ProductRow, CategoryRow } from "@/modules/pos/types";
 import { useCartSync } from "@/modules/pos/hooks/useCartSync";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { useRentalAvailability } from "@/modules/pos/hooks/useRentalAvailability";
+import { RentalPickerSheet } from "@/modules/pos/components/RentalPickerSheet";
 
-const escapeHtml = (value: string | null | undefined) =>
-  (value ?? "")
-    .toString()
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
+type CartItemRow = {
+  product_id: string;
+  sku: string;
+  name: string;
+  selling_price: number;
+  cost_price?: number | null;
+  quantity: number;
+  stock_quantity?: number | null;
+  category_id?: string | null;
+  category_name?: string | null;
+  is_rental?: boolean;
+  rental_space_id?: string | null;
+};
+
+type ProductApiRow = ProductRow & {
+  category_name?: string | null;
+};
+
+const POS_PAGE_SIZE = 24;
 
 export function POSPage() {
   const navigate = useNavigate();
-  const profile = useSessionStore(selectProfile);
+
   const [products, setProducts] = useState<ProductRow[]>([]);
   const [categories, setCategories] = useState<CategoryRow[]>([]);
   const [selectedCategory, setSelectedCategory] = useState<string>("all");
   const [search, setSearch] = useState("");
+  const deferredSearch = useDeferredValue(search);
+  const [productsPage, setProductsPage] = useState(1);
+  const [productsTotal, setProductsTotal] = useState(0);
+  const [loadingProducts, setLoadingProducts] = useState(false);
+  const [productsLoadError, setProductsLoadError] = useState<string | null>(null);
   const [scanValue, setScanValue] = useState("");
   const [showManualEntry, setShowManualEntry] = useState(false);
-  const [recentlyAddedProductId, setRecentlyAddedProductId] =
-    useState<string | null>(null);
+  const [showRentalPicker, setShowRentalPicker] = useState(false);
+  const [recentlyAddedProductId, setRecentlyAddedProductId] = useState<string | null>(null);
+  const scanInputRef = useRef<HTMLInputElement>(null);
 
   const cart = usePOSStore((state) => state.cart);
-  const heldCartsLocal = usePOSStore((state) => state.heldCarts);
   const addItem = usePOSStore((state) => state.addItem);
   const setCart = usePOSStore((state) => state.setCart);
+  const { spaces: rentalSpaces, bookingsBySpace } = useRentalAvailability();
 
   useCartSync(cart);
 
   useEffect(() => {
-    if (!isSupabaseConfigured) {
-      const fallbackCategoryMap: Record<string, string> = {
-        "Uniforms": "uniforms",
-        "Accessories": "accessories",
-        "Merit Badges": "badges",
-        "Hall Rental": "rent-hall",
-        "Room Rental": "rent-room",
-        "Hall & Room Rentals": "rent-hall-room",
-      };
-
-      setProducts(
-        demoProducts.map((item) => ({
-          id: item.id,
-          sku: item.sku,
-          name: item.name,
-          selling_price: item.selling_price,
-          cost_price: item.cost_price,
-          stock_quantity: item.stock_quantity,
-          is_active: true,
-          category_id:
-            (item as Partial<{ category_id: string }>).category_id ??
-            (item.category ? fallbackCategoryMap[item.category] ?? null : null),
-          image_url: (item as Partial<{ image_url: string }>).image_url ?? null,
-        }))
-      );
-      setCategories([
-        { id: "uniforms", name: "Uniforms" },
-        { id: "accessories", name: "Accessories" },
-        { id: "badges", name: "Merit Badges" },
-        { id: "rent-hall", name: "Hall Rental" },
-        { id: "rent-room", name: "Room Rental" },
-        { id: "rent-hall-room", name: "Hall & Room Rentals" },
-      ]);
-      return;
-    }
-
-    const load = async () => {
+    if (cart.length > 0) return;
+    const restore = async () => {
       try {
-        const [productsResult, categoriesResult, activeCartResult] = await Promise.all([
-          supabase
-            .from("products")
-            .select(
-              "id, sku, name, selling_price, cost_price, stock_quantity, size, category_id, is_active, image_url"
-            ),
-          supabase.from("product_categories").select("id, name"),
-          profile?.id
-            ? supabase
-                .from("active_carts")
-                .select(
-                  "id, active_cart_items(quantity, unit_price, product:products(id,sku,name,selling_price,cost_price,stock_quantity))"
-                )
-                .eq("created_by", profile.id)
-                .order("created_at", { ascending: false })
-                .limit(1)
-                .maybeSingle()
-            : Promise.resolve({ data: null, error: null }),
-        ]);
-
-        const { data: productsData, error: productsError } = productsResult;
-        const { data: categoriesData, error: categoriesError } = categoriesResult;
-        const activeCartData = (activeCartResult as any)?.data ?? null;
-        const activeCartError = (activeCartResult as any)?.error ?? null;
-
-        if (productsError) throw productsError;
-        if (categoriesError) throw categoriesError;
-        if (activeCartError) throw activeCartError;
-
-        const normalizedProducts: ProductRow[] = (productsData ?? []).map((product) => ({
-          id: product.id,
-          sku: product.sku,
-          name: product.name,
-          selling_price: product.selling_price,
-          cost_price: product.cost_price,
-          stock_quantity: product.stock_quantity,
-          size: product.size,
-          category_id: product.category_id,
-          is_active: Boolean(product.is_active),
-          image_url: product.image_url,
-        }));
-
-        setProducts(normalizedProducts);
-        setCategories(categoriesData ?? []);
-
-        if (activeCartData && !cart.length) {
-          const items = activeCartData.active_cart_items ?? [];
-          const categoryLookup = new Map(
-            (categoriesData ?? []).map((category) => [category.id, category.name])
-          );
-          const mapped = items
-            .filter((item: any) => item.product)
-            .map((item: any) => ({
-              id: item.product.id,
-              sku: item.product.sku,
-              name: item.product.name,
-              price: item.product.selling_price,
-              cost: item.product.cost_price ?? undefined,
-              quantity: item.quantity,
-              maxQuantity: item.product.stock_quantity ?? item.quantity,
-              categoryId: item.product.category_id ?? null,
-              categoryName: categoryLookup.get(item.product.category_id ?? "") ?? null,
-            }));
-          if (mapped.length > 0) {
-            setCart(mapped);
-          }
-        }
-      } catch (error) {
-        console.error(error);
-        toast.error("Failed to load products");
+        const { items } = await api.get<{ cart: unknown; items: CartItemRow[] }>("/carts/active");
+        if (!items || items.length === 0) return;
+        setCart(
+          items.map((item) => ({
+            id: item.product_id,
+            sku: item.sku,
+            name: item.name,
+            price: item.selling_price,
+            cost: item.cost_price ?? undefined,
+            quantity: item.quantity,
+            maxQuantity: item.stock_quantity ?? item.quantity,
+            categoryId: item.category_id ?? null,
+            categoryName: item.category_name ?? null,
+            isRental: Boolean(item.is_rental),
+            rentalSpaceId: item.rental_space_id ?? null,
+          }))
+        );
+      } catch {
+        // Cart restore is best effort only.
       }
     };
+    void restore();
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    load();
-  }, [cart.length, profile?.id, setCart, categories]);
+  useEffect(() => {
+    const loadCategories = async () => {
+      try {
+        const categoriesData = await api.get<{ categories: CategoryRow[] }>("/products/categories?exclude_rental=true");
+        setCategories(categoriesData.categories ?? []);
+      } catch (error) {
+        console.error(error);
+        toast.error("Failed to load product categories");
+      }
+    };
+    void loadCategories();
+  }, []);
 
-  const filteredProducts = useMemo(() => {
-    const query = search.trim().toLowerCase();
-    return products.filter((product) => {
-      const matchesQuery = !query
-        ? true
-        : product.name.toLowerCase().includes(query) || product.sku.toLowerCase().includes(query);
-      const matchesCategory = selectedCategory === "all" || product.category_id === selectedCategory;
-      return matchesQuery && matchesCategory;
-    });
-  }, [products, search, selectedCategory]);
+  useEffect(() => {
+    const loadProducts = async () => {
+      setLoadingProducts(true);
+      setProductsLoadError(null);
+      try {
+        const params = new URLSearchParams({
+          page: String(productsPage),
+          page_size: String(POS_PAGE_SIZE),
+        });
+        const trimmedSearch = deferredSearch.trim();
+        if (trimmedSearch) params.set("search", trimmedSearch);
+        if (selectedCategory !== "all") params.set("category_id", selectedCategory);
 
-  const handlePrintAllBarcodes = useCallback(() => {
-    const printableProducts = filteredProducts.filter((product) => (product.sku || product.id) && product.is_active);
-    if (!printableProducts.length) {
-      toast.error("No printable barcodes for the current filter.");
-      return;
-    }
+        const response = await api.get<{ products: ProductApiRow[]; total: number }>(`/products?${params.toString()}`);
+        setProducts(response.products ?? []);
+        setProductsTotal(response.total ?? 0);
+      } catch (error) {
+        console.error(error);
+        const message = error instanceof Error ? error.message : "Failed to load products";
+        setProductsLoadError(message);
+        toast.error(message);
+      } finally {
+        setLoadingProducts(false);
+      }
+    };
+    void loadProducts();
+  }, [deferredSearch, productsPage, selectedCategory]);
 
-    const printWindow = window.open("", "_blank", "width=900,height=700");
-    if (!printWindow) {
-      toast.error("Pop-up blocked. Enable pop-ups to print barcodes.");
-      return;
-    }
+  useEffect(() => {
+    setProductsPage(1);
+  }, [deferredSearch, selectedCategory]);
 
-    const barcodeCards = printableProducts
-      .map((product, index) => {
-        const barcodeValue = product.sku || product.id || "";
-        return `
-          <div class="barcode-card">
-            <h2>${escapeHtml(product.name)}</h2>
-            <svg id="barcode-${index}"></svg>
-            <div class="sku">${escapeHtml(barcodeValue)}</div>
-          </div>
-        `;
-      })
-      .join("");
-
-    const barcodeScripts = printableProducts
-      .map((product, index) => {
-        const barcodeValue = product.sku || product.id || "";
-        return `JsBarcode("#barcode-${index}", ${JSON.stringify(barcodeValue)}, {
-          format: "CODE128",
-          displayValue: false,
-          lineColor: "#000000",
-          width: 1.8,
-          height: 70,
-          margin: 6
-        });`;
-      })
-      .join("\n");
-
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <meta charset="utf-8" />
-          <title>Product Barcodes</title>
-          <script src="https://cdn.jsdelivr.net/npm/jsbarcode@3.11.5/dist/JsBarcode.all.min.js"></script>
-          <style>
-            :root { color-scheme: light; }
-            body {
-              margin: 0;
-              font-family: 'Inter', system-ui, sans-serif;
-              background: #f8fafc;
-              padding: 24px;
-            }
-            .grid {
-              display: grid;
-              grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-              gap: 20px;
-            }
-            .barcode-card {
-              background: #ffffff;
-              border: 1px solid #e2e8f0;
-              border-radius: 12px;
-              padding: 16px;
-              display: flex;
-              flex-direction: column;
-              align-items: center;
-              gap: 12px;
-              box-shadow: 0 2px 8px rgba(15, 23, 42, 0.08);
-              page-break-inside: avoid;
-            }
-            .barcode-card h2 {
-              margin: 0;
-              font-size: 14px;
-              font-weight: 600;
-              text-align: center;
-              color: #0f172a;
-            }
-            .barcode-card .sku {
-              font-size: 11px;
-              letter-spacing: 0.12em;
-              text-transform: uppercase;
-              color: #475569;
-            }
-            .barcode-card svg {
-              width: 100%;
-              max-width: 100%;
-            }
-            @media print {
-              body {
-                padding: 12px;
-              }
-              .grid {
-                gap: 16px;
-              }
-            }
-          </style>
-        </head>
-        <body>
-          <div class="grid">
-            ${barcodeCards}
-          </div>
-          <script>
-            window.addEventListener("load", function () {
-              ${barcodeScripts}
-              setTimeout(function () {
-                window.print();
-                window.close();
-              }, 300);
-            });
-          </script>
-        </body>
-      </html>
-    `);
-
-    printWindow.document.close();
-    printWindow.focus();
-  }, [filteredProducts]);
   const handleAddToCart = useCallback(
     (product: ProductRow) => {
       if (!product.is_active) {
@@ -308,8 +145,6 @@ export function POSPage() {
       const categoryName = product.category_id
         ? categories.find((category) => category.id === product.category_id)?.name ?? null
         : null;
-      const isRental =
-        categoryName && ["Hall Rental", "Room Rental", "Hall & Room Rentals"].includes(categoryName);
 
       addItem({
         id: product.id,
@@ -318,11 +153,23 @@ export function POSPage() {
         price: product.selling_price,
         cost: product.cost_price ?? undefined,
         quantity: 1,
-        maxQuantity: isRental ? 1 : product.stock_quantity,
+        maxQuantity: product.is_rental ? 1 : product.stock_quantity,
         categoryId: product.category_id ?? null,
         categoryName,
+        isRental: Boolean(product.is_rental),
+        rentalSpaceId: product.rental_space_id ?? null,
       });
-      toast.success(`${product.name} added to cart`);
+
+      if (
+        !product.is_rental &&
+        product.reorder_level != null &&
+        product.stock_quantity > 0 &&
+        product.stock_quantity <= product.reorder_level
+      ) {
+        toast.warning(`Low stock: only ${product.stock_quantity} unit${product.stock_quantity !== 1 ? "s" : ""} remaining for ${product.name}.`);
+      } else {
+        toast.success(`${product.name} added to cart`);
+      }
       setRecentlyAddedProductId(product.id);
     },
     [addItem, categories]
@@ -334,54 +181,143 @@ export function POSPage() {
     return () => clearTimeout(timeout);
   }, [recentlyAddedProductId]);
 
-  const handleScanSubmit = (event: FormEvent<HTMLFormElement>) => {
+  useEffect(() => {
+    scanInputRef.current?.focus();
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape" || e.key === "/") {
+        const active = document.activeElement;
+        if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
+        e.preventDefault();
+        scanInputRef.current?.focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => document.removeEventListener("keydown", handleKeyDown);
+  }, []);
+
+  const findProductByCode = useCallback(
+    async (raw: string) => {
+      const code = raw.trim();
+      if (!code) return null;
+
+      const exactLocal = products.find(
+        (item) => item.sku.toLowerCase() === code.toLowerCase() || item.id.toLowerCase() === code.toLowerCase()
+      );
+      if (exactLocal) return exactLocal;
+
+      const params = new URLSearchParams({
+        search: code,
+        page: "1",
+        page_size: "10",
+      });
+      const response = await api.get<{ products: ProductApiRow[] }>(`/products?${params.toString()}`);
+      return (
+        response.products?.find(
+          (item) => item.sku.toLowerCase() === code.toLowerCase() || item.id.toLowerCase() === code.toLowerCase()
+        ) ?? null
+      );
+    },
+    [products]
+  );
+
+  const processBarcode = useCallback(
+    async (raw: string) => {
+      const product = await findProductByCode(raw);
+      if (!product) {
+        toast.error(`Product not found: ${raw.trim()}`);
+        return;
+      }
+      if (!product.is_active) {
+        toast.warning(`${product.name} is inactive and cannot be sold.`);
+        return;
+      }
+      handleAddToCart(product);
+      setShowManualEntry(false);
+    },
+    [findProductByCode, handleAddToCart]
+  );
+
+  const handleScanSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!scanValue.trim()) return;
-
-    const code = scanValue.trim().toLowerCase();
-    const product = products.find((item) => item.sku.toLowerCase() === code || item.id.toLowerCase() === code);
-    if (!product) {
-      toast.error("Product not found");
-      return;
-    }
-    if (!product.is_active) {
-      toast.warning(`${product.name} is inactive and cannot be sold.`);
-      setScanValue("");
-      return;
-    }
-
-    handleAddToCart(product);
+    await processBarcode(scanValue);
     setScanValue("");
-    setShowManualEntry(false);
   };
 
-  const cartItemCount = cart.length;
-  const { data: heldRemote = [] } = useQuery({
-    queryKey: ["held-carts"],
-    enabled: isSupabaseConfigured,
-    queryFn: async () => {
-      const { data, error } = await supabase
-        .from("held_carts")
-        .select("id")
-        .eq("status", "held");
-      if (error) throw error;
-      return data ?? [];
-    },
-  });
-  const heldCount = isSupabaseConfigured ? heldRemote.length : Object.keys(heldCartsLocal).length;
+  useEffect(() => {
+    let buffer = "";
+    let lastKeyTime = 0;
+    const SCANNER_SPEED_MS = 50;
+    const SCANNER_MIN_LEN = 3;
 
+    const handleGlobalKey = (e: KeyboardEvent) => {
+      const active = document.activeElement;
+      if (active === scanInputRef.current) return;
+      if (active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement) return;
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+      const now = Date.now();
+      const gap = now - lastKeyTime;
+      if (gap > 500) buffer = "";
+      lastKeyTime = now;
+
+      if (e.key === "Enter" || e.key === "Tab") {
+        const code = buffer.trim();
+        buffer = "";
+        if (code.length >= SCANNER_MIN_LEN) {
+          e.preventDefault();
+          void processBarcode(code);
+        }
+        return;
+      }
+
+      if (e.key.length === 1) {
+        if (buffer.length === 0 || gap <= SCANNER_SPEED_MS) {
+          buffer += e.key;
+        } else {
+          buffer = e.key;
+        }
+      }
+    };
+
+    document.addEventListener("keydown", handleGlobalKey);
+    return () => document.removeEventListener("keydown", handleGlobalKey);
+  }, [processBarcode]);
+
+  const cartItemCount = cart.reduce((sum, item) => sum + item.quantity, 0);
+  const totalPages = Math.max(1, Math.ceil(productsTotal / POS_PAGE_SIZE));
+  const statusText = useMemo(() => {
+    if (loadingProducts) return "Loading products...";
+    if (!productsTotal) return "No matching products";
+    return `Showing ${products.length} of ${productsTotal} products`;
+  }, [loadingProducts, products.length, productsTotal]);
 
   return (
     <div className="pb-24">
-      <POSHeader
-        cartCount={cartItemCount}
-        heldCount={heldCount}
-        onPrintBarcodes={handlePrintAllBarcodes}
-        printDisabled={!filteredProducts.length}
-        onHeldClick={() => navigate("/pos/cart")}
-      />
+      <POSHeader cartCount={cartItemCount} />
 
       <div className="pos-container mx-auto mt-4 w-full space-y-5 px-4 pb-16 pt-2 sm:px-6 lg:px-8">
+        <section>
+          <Card className="border-emerald-200/80 bg-gradient-to-r from-emerald-50 via-white to-emerald-50 shadow-sm">
+            <CardContent className="flex flex-col gap-4 py-5 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-lg font-semibold text-emerald-900">Rental Booking</h2>
+                <p className="text-sm text-emerald-800/80">
+                  Book halls and rooms through the rental flow instead of merchandise categories.
+                </p>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button variant="outline" onClick={() => navigate("/rental-calendar")}>
+                  View Calendar
+                </Button>
+                <Button onClick={() => setShowRentalPicker(true)}>
+                  Open Rentals
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </section>
+
         <section className="space-y-3">
           <Card className="w-full border-border/80 shadow-sm">
             <CardHeader className="pb-3">
@@ -394,40 +330,109 @@ export function POSPage() {
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-3">
-              <form className="flex flex-col gap-2 sm:flex-row sm:items-center" onSubmit={handleScanSubmit}>
-                <Input
-                  placeholder="Scan or type SKU here"
-                  value={scanValue}
-                  onChange={(event) => setScanValue(event.target.value)}
-                  className="h-12 flex-1 text-base"
-                />
-                <Button type="submit" className="h-12 min-w-[150px] text-base font-semibold sm:w-auto">
-                  Add Item
-                </Button>
+              <form
+                className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start"
+                onSubmit={(event) => void handleScanSubmit(event)}
+              >
+                <div className="min-w-0 space-y-2">
+                  <Label htmlFor="pos-scan-input">Scan or type SKU</Label>
+                  <Input
+                    id="pos-scan-input"
+                    ref={scanInputRef}
+                    placeholder="Scan or type SKU here"
+                    aria-describedby="pos-scan-help"
+                    value={scanValue}
+                    onChange={(event) => setScanValue(event.target.value)}
+                    className="h-12 flex-1 text-base"
+                  />
+                  <p id="pos-scan-help" className="text-xs text-muted-foreground">
+                    Press `Enter` after typing, or use a barcode scanner to add the exact item immediately.
+                  </p>
+                </div>
+                <div className="sm:pt-7">
+                  <Button type="submit" className="h-12 w-full min-w-[150px] text-base font-semibold sm:w-auto">
+                    Add Item
+                  </Button>
+                </div>
               </form>
-              <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
-                <Input
-                  placeholder="Search products by name or SKU"
-                  value={search}
-                  onChange={(event) => setSearch(event.target.value)}
-                  className="h-10 flex-1 text-sm"
-                />
-                <Button variant="outline" className="h-10 px-4 sm:w-auto" onClick={() => setShowManualEntry(true)}>
-                  Manual Entry
-                </Button>
+              <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-start">
+                <div className="min-w-0 space-y-2">
+                  <Label htmlFor="pos-product-search">Search products</Label>
+                  <Input
+                    id="pos-product-search"
+                    placeholder="Search products by name or SKU"
+                    aria-describedby="pos-product-search-help"
+                    value={search}
+                    onChange={(event) => setSearch(event.target.value)}
+                    className="h-10 text-sm"
+                  />
+                  <p id="pos-product-search-help" className="text-xs text-muted-foreground">
+                    Results update from the server and respect the selected category.
+                  </p>
+                </div>
+                <div className="sm:pt-7">
+                  <Button variant="outline" className="h-10 w-full px-4 sm:w-auto" onClick={() => setShowManualEntry(true)}>
+                    Manual Entry
+                  </Button>
+                </div>
               </div>
+              <div className="flex items-center justify-between text-xs text-muted-foreground">
+                <span>{statusText}</span>
+                {loadingProducts ? (
+                  <span className="inline-flex items-center gap-2">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    Refreshing
+                  </span>
+                ) : null}
+              </div>
+              {productsLoadError ? (
+                <div
+                  role="alert"
+                  className="rounded-md border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive"
+                >
+                  Unable to refresh products right now. Showing the latest loaded results.
+                </div>
+              ) : null}
             </CardContent>
           </Card>
         </section>
 
         <ProductGrid
-          products={filteredProducts}
+          products={products}
           categories={categories}
           selectedCategory={selectedCategory}
           onSelectCategory={setSelectedCategory}
           onAddToCart={handleAddToCart}
           recentlyAddedProductId={recentlyAddedProductId}
         />
+
+        {productsTotal > POS_PAGE_SIZE ? (
+          <div className="flex flex-col gap-3 rounded-lg border border-border/60 bg-card px-4 py-3 text-sm sm:flex-row sm:items-center sm:justify-between">
+            <span className="text-muted-foreground">
+              Page {productsPage} of {totalPages}
+            </span>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={productsPage <= 1 || loadingProducts}
+                onClick={() => setProductsPage((value) => Math.max(1, value - 1))}
+              >
+                Previous
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                disabled={productsPage >= totalPages || loadingProducts}
+                onClick={() => setProductsPage((value) => Math.min(totalPages, value + 1))}
+              >
+                Next
+              </Button>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <Sheet open={showManualEntry} onOpenChange={setShowManualEntry}>
@@ -435,15 +440,19 @@ export function POSPage() {
           <SheetHeader>
             <SheetTitle>Manual Item Entry</SheetTitle>
           </SheetHeader>
-          <form className="mt-4 space-y-4" onSubmit={handleScanSubmit}>
+          <form className="mt-4 space-y-4" onSubmit={(event) => void handleScanSubmit(event)}>
             <div className="space-y-2">
               <Label htmlFor="manual-sku">SKU or Item Name</Label>
               <Input
                 id="manual-sku"
                 placeholder="GS-VEST-S or Girl Scout Vest"
+                aria-describedby="manual-sku-help"
                 value={scanValue}
                 onChange={(event) => setScanValue(event.target.value)}
               />
+              <p id="manual-sku-help" className="text-xs text-muted-foreground">
+                Use the exact SKU for the fastest match. Name search works best for a few keywords.
+              </p>
             </div>
             <Button type="submit" className="w-full">
               Add to Cart
@@ -451,7 +460,31 @@ export function POSPage() {
           </form>
         </SheetContent>
       </Sheet>
+
+      <RentalPickerSheet
+        open={showRentalPicker}
+        onOpenChange={setShowRentalPicker}
+        spaces={rentalSpaces}
+        bookingsBySpace={bookingsBySpace}
+        onAddRental={(space, rentalDate) => {
+          addItem({
+            id: space.product_id!,
+            sku: `RENT-${space.id}`,
+            name: space.name,
+            price: Number(space.base_rate),
+            cost: 0,
+            quantity: 1,
+            maxQuantity: 1,
+            categoryId: space.product_category_id ?? null,
+            categoryName: null,
+            isRental: true,
+            rentalSpaceId: space.id,
+            rentalDate,
+          });
+          toast.success(`${space.name} added to cart`);
+          setShowRentalPicker(false);
+        }}
+      />
     </div>
   );
 }
-

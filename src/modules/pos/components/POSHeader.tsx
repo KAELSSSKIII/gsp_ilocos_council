@@ -1,22 +1,11 @@
-import { Button } from "@/components/ui/button";
-import { ShoppingCart, Printer, PauseCircle } from "lucide-react";
+import { ShoppingCart } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 type POSHeaderProps = {
   cartCount: number;
-  heldCount: number;
-  onPrintBarcodes: () => void;
-  printDisabled: boolean;
-  onHeldClick: () => void;
 };
 
-export function POSHeader({
-  cartCount,
-  heldCount,
-  onPrintBarcodes,
-  printDisabled,
-  onHeldClick,
-}: POSHeaderProps) {
+export function POSHeader({ cartCount }: POSHeaderProps) {
   const navigate = useNavigate();
 
   const handleNavigateToCart = () => {
@@ -34,29 +23,6 @@ export function POSHeader({
         </div>
 
         <div className="flex items-center gap-3 sm:gap-4">
-          <Button
-            variant="default"
-            onClick={onPrintBarcodes}
-            disabled={printDisabled}
-            className="h-11 rounded-full bg-emerald-700 px-5 text-sm font-semibold text-white shadow-sm transition hover:bg-emerald-600 disabled:bg-emerald-400"
-          >
-            <Printer className="mr-2 h-4 w-4" />
-            Print All Barcodes
-          </Button>
-          <Button
-            type="button"
-            variant="outline"
-            onClick={onHeldClick}
-            className="relative h-11 min-w-[120px] justify-center gap-2 rounded-full border-emerald-200 bg-white px-5 text-sm font-medium text-emerald-800 transition hover:border-emerald-400 hover:bg-emerald-50"
-          >
-            <PauseCircle className="h-4 w-4" />
-            <span className="hidden sm:inline">On Hold</span>
-            {heldCount > 0 && (
-              <span className="absolute -right-1 -top-1 flex h-5 min-w-[20px] items-center justify-center rounded-full bg-amber-500 px-1 text-[11px] font-semibold text-amber-50">
-                {heldCount}
-              </span>
-            )}
-          </Button>
           <button
             type="button"
             onClick={handleNavigateToCart}

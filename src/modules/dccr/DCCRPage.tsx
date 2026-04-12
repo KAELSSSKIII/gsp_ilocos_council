@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
+import api from "@/lib/api";
 import { useSessionStore, selectProfile } from "@/store/sessionStore";
 import {
   Card,
@@ -27,8 +27,10 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { Badge } from "@/components/ui/badge";
-import { Loader2, FileText, Download, Printer } from "lucide-react";
+import { Loader2, FileText, Download, Printer, FileSpreadsheet, FileType } from "lucide-react";
 import { formatCurrency } from "@/utils/format";
+import { readBusinessSettings } from "@/utils/businessSettings";
+import * as XLSX from "xlsx";
 
 type ReportRow = {
   id: string;
@@ -63,10 +65,31 @@ type CashierSummary = {
   net: number;
 };
 
+type SaleReportItem = {
+  quantity?: number | string | null;
+  product_name?: string | null;
+  category_name?: string | null;
+  subtotal?: number | string | null;
+};
+
+type SaleReportRow = {
+  id: string;
+  sale_number?: string | null;
+  receipt_number?: number | string | null;
+  total_amount?: number | string | null;
+  payment_method?: string | null;
+  status?: string | null;
+  created_at: string;
+  cashier_id?: string | null;
+  cashier_name?: string | null;
+  items?: unknown;
+};
+
 const formatDateInput = (value: Date) => value.toISOString().slice(0, 10);
 
 export function DCCRPage() {
   const profile = useSessionStore(selectProfile);
+  const isCashier = profile?.role === "cashier";
 
   const [selectedDate, setSelectedDate] = useState(() => formatDateInput(new Date()));
   const [selectedCashier, setSelectedCashier] = useState<string>(
@@ -83,16 +106,9 @@ export function DCCRPage() {
 
   const cashiersQuery = useQuery({
     queryKey: ["dccr-cashiers"],
-    enabled: isSupabaseConfigured,
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("profiles")
-        .select("id, full_name, role")
-        .in("role", ["cashier", "admin", "accountant"])
-        .order("full_name", { ascending: true });
-
-      if (error) throw error;
-      return data ?? [];
+      const { users } = await api.get<{ users: { id: string; full_name: string; role: string }[] }>("/auth/users");
+      return (users ?? []).filter((u) => ["cashier", "admin", "accountant"].includes(u.role));
     },
   });
 
@@ -100,59 +116,31 @@ export function DCCRPage() {
     queryKey: ["dccr-report", selectedDate, selectedCashier, refreshKey],
     enabled: hasGenerated,
     queryFn: async (): Promise<ReportRow[]> => {
-      if (!isSupabaseConfigured) {
-        return [];
-      }
-
       const start = new Date(`${selectedDate}T00:00:00`);
       const end = new Date(start);
       end.setDate(end.getDate() + 1);
 
-      let query = supabase
-        .from("sales")
-        .select(
-          `
-            id,
-            sale_number,
-            receipt_number,
-            total_amount,
-            status,
-            created_at,
-            payment_method,
-            cashier_id,
-            profiles!sales_cashier_id_fkey(full_name),
-            sale_items(quantity, subtotal, products(name, category:product_categories(name)))
-          `
-        )
-        .gte("created_at", start.toISOString())
-        .lt("created_at", end.toISOString())
-        .order("created_at", { ascending: true });
-
+      const params = new URLSearchParams({
+        from: start.toISOString(),
+        to: end.toISOString(),
+        include_items: "true",
+      });
       if (selectedCashier && selectedCashier !== "all") {
-        query = query.eq("cashier_id", selectedCashier);
+        params.set("cashier_id", selectedCashier);
       }
 
-      const { data, error } = await query;
-      if (error) throw error;
+      const { sales } = await api.get<{ sales: SaleReportRow[] }>(`/sales?${params.toString()}`);
 
-      return (data ?? []).map((row) => {
-        const rawItems = Array.isArray(row.sale_items)
-          ? row.sale_items
-          : row.sale_items
-            ? [row.sale_items]
-            : [];
+      return (sales ?? []).map((row) => {
+        const rawItems: SaleReportItem[] = Array.isArray(row.items) ? row.items : [];
 
         let salesAmount = 0;
         let rentalAmount = 0;
 
-        const lineItems = rawItems.map((item: any) => {
+        const lineItems = rawItems.map((item) => {
           const quantity = Number(item?.quantity ?? 0);
-          const name =
-            (item?.products?.name as string | null) ??
-            "Unspecified item";
-          const categoryName =
-            (item?.products?.category?.name as string | undefined) ??
-            undefined;
+          const name = item.product_name ?? "Unspecified item";
+          const categoryName = item.category_name ?? undefined;
           const subtotal = Number(item?.subtotal ?? 0);
           const isRental = categoryName && /rental/i.test(categoryName);
           if (isRental) {
@@ -167,22 +155,19 @@ export function DCCRPage() {
         return {
           id: row.id,
           saleNumber: row.sale_number ?? "—",
-          receiptNumber: row.receipt_number ?? null,
+          receiptNumber: row.receipt_number != null ? Number(row.receipt_number) : null,
           totalAmount: Number(row.total_amount ?? 0),
           paymentMethod: row.payment_method ?? "unknown",
           status: row.status ?? "completed",
           createdAt: row.created_at,
           cashierId: row.cashier_id ?? "unknown",
-          cashierName:
-            (Array.isArray(row.profiles) ? row.profiles[0]?.full_name : row.profiles?.full_name) ??
-            "Unknown cashier",
+          cashierName: row.cashier_name ?? "Unknown cashier",
           lineItems,
           salesAmount,
           rentalAmount,
         };
       });
     },
-    keepPreviousData: true,
   });
 
   const summary: SummaryTotals = useMemo(() => {
@@ -261,7 +246,7 @@ export function DCCRPage() {
   }, [reportQuery.data]);
 
   const selectedCashierLabel = useMemo(() => {
-    if (selectedCashier === "all" || !selectedCashier) return "All cashiers";
+    if (selectedCashier === "all" || !selectedCashier) return "All Accounts";
     if (selectedCashier === profile?.id) {
       return profile?.full_name ? `${profile.full_name} (You)` : "Current cashier";
     }
@@ -270,134 +255,230 @@ export function DCCRPage() {
   }, [selectedCashier, profile?.id, profile?.full_name, cashiersQuery.data]);
 
   const buildPrintableMarkup = () => {
-    const summaryCards = `
-      <div class="summary-grid">
-        <div class="summary-card">
-          <h3>Total Cash Sales</h3>
-          <div>${formatCurrency(summary.totalCashSales)}</div>
-        </div>
-        <div class="summary-card">
-          <h3>Total Voided Sales</h3>
-          <div>${formatCurrency(summary.totalVoidedSales)}</div>
-        </div>
-        <div class="summary-card">
-          <h3>Net Sales (excludes voids)</h3>
-          <div>${formatCurrency(summary.netCollection)}</div>
-        </div>
-        <div class="summary-card">
-          <h3>Rental Revenue</h3>
-          <div>${formatCurrency(summary.totalRental)}</div>
-        </div>
-        <div class="summary-card">
-          <h3>Merchandise Sales</h3>
-          <div>${formatCurrency(summary.totalSalesMerch)}</div>
-        </div>
-        <div class="summary-card">
-          <h3>Receipt Range</h3>
-          <div>${summary.receiptRange}</div>
-        </div>
-        <div class="summary-card">
-          <h3>Receipts Issued</h3>
-          <div>${summary.totalReceiptsIssued}</div>
-        </div>
-      </div>
-    `;
+    const biz = readBusinessSettings();
+    const orgName = biz.orgName;
+    const councilName = biz.councilName;
+    const orgAddress = biz.orgAddress;
+    const preparedByName = biz.reportPreparedByName;
+    const preparedByTitle = biz.reportPreparedByTitle;
+    const verifiedByName = biz.reportVerifiedByName;
+    const verifiedByTitle = biz.reportVerifiedByTitle;
+    const approvedByName = biz.reportApprovedByName;
+    const approvedByTitle = biz.reportApprovedByTitle;
 
     const rows = (reportQuery.data ?? [])
       .map((row) => {
         const itemsMarkup = row.lineItems.length
-          ? `<ul class="items-list">${row.lineItems.map((item) => `<li>${item}</li>`).join("")}</ul>`
-          : `<span class="no-items">No items</span>`;
-
+          ? row.lineItems.map((item: string) => `<div class="item-line">${item}</div>`).join("")
+          : `<span class="no-items">—</span>`;
+        const isVoid = row.status === "voided";
         return `
-          <tr>
-            <td>${row.receiptNumber ?? "—"}</td>
+          <tr class="${isVoid ? "void-row" : ""}">
+            <td class="center">${row.receiptNumber ?? "—"}</td>
             <td>${row.cashierName}</td>
-            <td>${itemsMarkup}</td>
-            <td>${formatCurrency(row.totalAmount)}</td>
-            <td class="capitalize">${row.paymentMethod}</td>
-            <td>${new Date(row.createdAt).toLocaleString()}</td>
-            <td>${row.status === "voided" ? "Void" : "Completed"}</td>
+            <td class="items-cell">${itemsMarkup}</td>
+            <td class="right mono">${formatCurrency(row.salesAmount)}</td>
+            <td class="right mono">${formatCurrency(row.rentalAmount)}</td>
+            <td class="right mono bold ${isVoid ? "void-amt" : ""}">${isVoid ? `<span class="void-badge">VOID</span>` : formatCurrency(row.totalAmount)}</td>
+            <td class="center capitalize">${row.paymentMethod}</td>
+            <td class="center">${new Date(row.createdAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</td>
           </tr>
         `;
       })
       .join("");
 
     const cashierRows = cashierBreakdown
-      .map(
-        (item) => `
-          <tr>
-            <td>${item.cashierName}</td>
-            <td>${formatCurrency(item.completedTotal)}</td>
-            <td>${formatCurrency(item.voidedTotal)}</td>
-            <td>${formatCurrency(item.net)}</td>
-          </tr>
-        `
-      )
-      .join("");
+      .map((item) => `
+        <tr>
+          <td>${item.cashierName}</td>
+          <td class="right mono">${formatCurrency(item.completedTotal)}</td>
+          <td class="right mono void-amt">${item.voidedTotal > 0 ? formatCurrency(item.voidedTotal) : "—"}</td>
+          <td class="right mono bold">${formatCurrency(item.net)}</td>
+        </tr>
+      `).join("");
 
-    const breakdownTable =
-      cashierBreakdown.length > 1
-        ? `
-            <h3 class="section-title">Summary by Cashier</h3>
-            <table>
-              <thead>
-                <tr>
-                  <th>Cashier</th>
-                  <th>Total Sales</th>
-                  <th>Voided</th>
-                  <th>Net</th>
-                </tr>
-              </thead>
-              <tbody>${cashierRows}</tbody>
-            </table>
-          `
-        : "";
+    const breakdownSection = cashierBreakdown.length > 1 ? `
+      <div class="section-gap"></div>
+      <div class="section-header">Summary by Cashier</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Cashier</th>
+            <th class="right">Total Sales</th>
+            <th class="right">Voided</th>
+            <th class="right">Net Collection</th>
+          </tr>
+        </thead>
+        <tbody>${cashierRows}</tbody>
+      </table>
+    ` : "";
 
     return `
       <style>
-        .report-root { font-family: "Segoe UI", Arial, sans-serif; color: #0f172a; }
-        .report-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }
-        .report-header h1 { font-size: 20px; margin: 0 0 4px; }
-        .report-header p { font-size: 12px; color: #475569; margin: 0; }
-        .summary-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin: 16px 0 24px; }
-        .summary-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; background: #f8fafc; }
-        .summary-card h3 { font-size: 11px; text-transform: uppercase; color: #64748b; margin: 0 0 6px; }
-        .summary-card div { font-size: 16px; font-weight: 600; color: #0f172a; }
-        .items-list { margin: 0; padding-left: 16px; }
-        .items-list li { margin: 2px 0; font-size: 11px; color: #334155; }
-        .no-items { font-size: 11px; color: #94a3b8; font-style: italic; }
-        table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-        th, td { border-bottom: 1px solid #e2e8f0; padding: 8px 12px; text-align: left; font-size: 12px; }
-        th { background: #f1f5f9; font-weight: 600; text-transform: uppercase; font-size: 11px; color: #475569; }
-        .section-title { margin-top: 24px; font-size: 14px; font-weight: 600; color: #1e293b; }
+        :root { color-scheme: light; }
+        * { box-sizing: border-box; }
+        body { font-family: "Segoe UI", Arial, sans-serif; font-size: 11px; color: #0f172a; margin: 0; padding: 28px 32px; background: #fff; }
+
+        /* ── Letterhead ── */
+        .letterhead { display: flex; align-items: flex-start; justify-content: space-between; padding-bottom: 12px; border-bottom: 3px solid #166534; margin-bottom: 16px; }
+        .letterhead-left .org-name { font-size: 15px; font-weight: 700; color: #166534; text-transform: uppercase; letter-spacing: 0.04em; margin: 0 0 2px; }
+        .letterhead-left .council-name { font-size: 11px; font-weight: 600; color: #15803d; margin: 0 0 2px; }
+        .letterhead-left .org-address { font-size: 10px; color: #475569; margin: 0; }
+        .letterhead-right { text-align: right; }
+        .letterhead-right .report-title { font-size: 16px; font-weight: 700; color: #1e293b; margin: 0 0 2px; }
+        .letterhead-right .report-meta { font-size: 10px; color: #64748b; margin: 0; line-height: 1.5; }
+
+        /* ── Summary strip ── */
+        .summary-strip { display: grid; grid-template-columns: repeat(7, 1fr); gap: 0; margin: 14px 0 18px; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; }
+        .summary-item { padding: 10px 10px 8px; border-right: 1px solid #e2e8f0; background: #f8fafc; }
+        .summary-item:last-child { border-right: none; }
+        .summary-item.highlight { background: #f0fdf4; }
+        .summary-item .s-label { font-size: 9px; text-transform: uppercase; letter-spacing: 0.05em; color: #64748b; margin-bottom: 4px; }
+        .summary-item .s-value { font-size: 13px; font-weight: 700; color: #0f172a; }
+        .summary-item.highlight .s-value { color: #166534; }
+
+        /* ── Section ── */
+        .section-header { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: #475569; margin: 0 0 6px; padding-bottom: 4px; border-bottom: 1px solid #e2e8f0; }
+        .section-gap { margin-top: 22px; }
+
+        /* ── Table ── */
+        table { width: 100%; border-collapse: collapse; font-size: 11px; }
+        thead tr { background: #1e293b; }
+        thead th { color: #f8fafc; font-weight: 600; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding: 7px 10px; text-align: left; }
+        thead th.right { text-align: right; }
+        thead th.center { text-align: center; }
+        tbody tr { border-bottom: 1px solid #f1f5f9; }
+        tbody tr:nth-child(even) { background: #f8fafc; }
+        tbody tr.void-row { background: #fef2f2 !important; }
+        tbody td { padding: 6px 10px; vertical-align: top; color: #1e293b; }
+        tbody td.right { text-align: right; }
+        tbody td.center { text-align: center; }
+        tbody td.mono { font-variant-numeric: tabular-nums; }
+        tbody td.bold { font-weight: 600; }
+        tbody td.void-amt { color: #dc2626; }
+        tbody td.capitalize { text-transform: capitalize; }
+        tfoot td { padding: 7px 10px; font-weight: 700; font-size: 11px; border-top: 2px solid #1e293b; background: #f1f5f9; }
+        tfoot td.right { text-align: right; }
+        tfoot td.mono { font-variant-numeric: tabular-nums; }
+
+        .item-line { color: #334155; font-size: 10px; line-height: 1.5; }
+        .no-items { color: #94a3b8; font-style: italic; }
+        .void-badge { display: inline-block; background: #dc2626; color: #fff; font-size: 9px; font-weight: 700; padding: 1px 5px; border-radius: 3px; letter-spacing: 0.05em; }
+
+        /* ── Footer ── */
+        .doc-footer { margin-top: 32px; padding-top: 10px; padding-bottom: 8px; border-top: 1px solid #e2e8f0; display: flex; justify-content: space-between; align-items: flex-end; page-break-inside: avoid; break-inside: avoid; }
+        .sig-block { text-align: center; }
+        .sig-line { border-top: 1px solid #0f172a; width: 180px; margin: 24px auto 4px; }
+        .sig-label { font-size: 10px; color: #475569; }
+        .sig-name { font-size: 11px; font-weight: 600; color: #1e293b; }
+        .doc-generated { font-size: 9px; color: #94a3b8; text-align: right; line-height: 1.6; }
+
+        @media print {
+          body { padding: 0; }
+          @page { margin: 18mm 16mm 22mm; size: A4; }
+        }
       </style>
-      <div class="report-root">
-        <header class="report-header">
-          <div>
-            <h1>Daily Cash Collection Report</h1>
-            <p>${formattedDate} · ${selectedCashierLabel}</p>
-          </div>
-        </header>
-        ${summaryCards}
-        <h3 class="section-title">Transactions</h3>
-        <table>
-          <thead>
-            <tr>
-              <th>Receipt No.</th>
-              <th>Cashier</th>
-              <th>Items</th>
-              <th>Sale Amount</th>
-              <th>Payment Method</th>
-              <th>Date / Time</th>
-              <th>Status</th>
-            </tr>
-          </thead>
-          <tbody>
-            ${rows || "<tr><td colspan=7>No data</td></tr>"}
-          </tbody>
-        </table>
-        ${breakdownTable}
+
+      <!-- Letterhead -->
+      <div class="letterhead">
+        <div class="letterhead-left">
+          <p class="org-name">${orgName}</p>
+          <p class="council-name">${councilName}</p>
+          <p class="org-address">${orgAddress}</p>
+        </div>
+        <div class="letterhead-right">
+          <p class="report-title">Daily Cash Collection Report</p>
+          <p class="report-meta">
+            Date: <strong>${formattedDate}</strong><br/>
+            Cashier: <strong>${selectedCashierLabel}</strong>
+          </p>
+        </div>
+      </div>
+
+      <!-- Summary strip -->
+      <div class="summary-strip">
+        <div class="summary-item">
+          <div class="s-label">Cash Sales</div>
+          <div class="s-value">${formatCurrency(summary.totalCashSales)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="s-label">Merchandise</div>
+          <div class="s-value">${formatCurrency(summary.totalSalesMerch)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="s-label">Rental Revenue</div>
+          <div class="s-value">${formatCurrency(summary.totalRental)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="s-label">Voided</div>
+          <div class="s-value" style="color:#dc2626">${formatCurrency(summary.totalVoidedSales)}</div>
+        </div>
+        <div class="summary-item highlight">
+          <div class="s-label">Net Collection</div>
+          <div class="s-value">${formatCurrency(summary.netCollection)}</div>
+        </div>
+        <div class="summary-item">
+          <div class="s-label">Receipt Range</div>
+          <div class="s-value">${summary.receiptRange}</div>
+        </div>
+        <div class="summary-item">
+          <div class="s-label">Receipts Issued</div>
+          <div class="s-value">${summary.totalReceiptsIssued}</div>
+        </div>
+      </div>
+
+      <!-- Transactions -->
+      <div class="section-header">Transactions</div>
+      <table>
+        <thead>
+          <tr>
+            <th class="center">OR No.</th>
+            <th>Cashier</th>
+            <th>Items</th>
+            <th class="right">Merch.</th>
+            <th class="right">Rental</th>
+            <th class="right">Total</th>
+            <th class="center">Payment</th>
+            <th class="center">Time</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${rows || `<tr><td colspan="8" style="text-align:center;color:#94a3b8;padding:16px">No transactions for this period.</td></tr>`}
+        </tbody>
+        <tfoot>
+          <tr>
+            <td colspan="3" style="text-align:right">Totals</td>
+            <td class="right mono">${formatCurrency(summary.totalSalesMerch)}</td>
+            <td class="right mono">${formatCurrency(summary.totalRental)}</td>
+            <td class="right mono">${formatCurrency(summary.netCollection)}</td>
+            <td colspan="2"></td>
+          </tr>
+        </tfoot>
+      </table>
+
+      ${breakdownSection}
+
+      <!-- Signature footer -->
+      <div class="doc-footer">
+        <div class="sig-block">
+          <div class="sig-line"></div>
+          <div class="sig-name">${preparedByName || (selectedCashierLabel !== "All Accounts" ? selectedCashierLabel.replace(/\s*\(You\)$/i, "") : "")}</div>
+          <div class="sig-label">${preparedByTitle}</div>
+        </div>
+        <div class="sig-block">
+          <div class="sig-line"></div>
+          <div class="sig-name">${verifiedByName}</div>
+          <div class="sig-label">${verifiedByTitle}</div>
+        </div>
+        <div class="sig-block">
+          <div class="sig-line"></div>
+          <div class="sig-name">${approvedByName}</div>
+          <div class="sig-label">${approvedByTitle}</div>
+        </div>
+        <div class="doc-generated">
+          Generated: ${new Date().toLocaleString()}<br/>
+          ${orgName} – ${councilName}
+        </div>
       </div>
     `;
   };
@@ -422,47 +503,156 @@ export function DCCRPage() {
 
     await html2pdf()
       .set({
-        margin: 12,
+        margin: [12, 12, 24, 12],
         filename,
-        html2canvas: { scale: 2, useCORS: true },
+        html2canvas: { scale: 2, useCORS: true, logging: false },
         jsPDF: { unit: "mm", format: "a4", orientation: "portrait" },
+        pagebreak: { avoid: ".doc-footer" },
       })
       .from(element)
       .save();
   };
 
+  const handleExportExcel = () => {
+    const wb = XLSX.utils.book_new();
+
+    // ── Summary sheet ──────────────────────────────────────────────────────────
+    const summaryData = [
+      ["Daily Cash Collection Report"],
+      [`Date: ${formattedDate}`, `Cashier: ${selectedCashierLabel}`],
+      [],
+      ["Metric", "Value"],
+      ["Total Cash Sales",    formatCurrency(summary.totalCashSales)],
+      ["Total Voided Sales",  formatCurrency(summary.totalVoidedSales)],
+      ["Net Sales (excl. voids)", formatCurrency(summary.netCollection)],
+      ["Rental Revenue",      formatCurrency(summary.totalRental)],
+      ["Merchandise Sales",   formatCurrency(summary.totalSalesMerch)],
+      ["Receipt Range",       summary.receiptRange],
+      ["Receipts Issued",     summary.totalReceiptsIssued],
+    ];
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryData), "Summary");
+
+    // ── Transactions sheet ─────────────────────────────────────────────────────
+    const txHeaders = ["Receipt No.", "Cashier", "Items", "Sale Amount", "Payment Method", "Date / Time", "Status"];
+    const txRows = (reportQuery.data ?? []).map((row) => [
+      row.receiptNumber ?? "—",
+      row.cashierName,
+      row.lineItems.join("; "),
+      row.totalAmount,
+      row.paymentMethod,
+      new Date(row.createdAt).toLocaleString(),
+      row.status === "voided" ? "Void" : "Completed",
+    ]);
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([txHeaders, ...txRows]), "Transactions");
+
+    // ── Cashier Breakdown sheet ────────────────────────────────────────────────
+    if (cashierBreakdown.length > 1) {
+      const cbHeaders = ["Cashier", "Total Sales", "Voided", "Net"];
+      const cbRows = cashierBreakdown.map((item) => [
+        item.cashierName,
+        item.completedTotal,
+        item.voidedTotal,
+        item.net,
+      ]);
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([cbHeaders, ...cbRows]), "By Cashier");
+    }
+
+    XLSX.writeFile(wb, `dccr-${selectedDate}.xlsx`);
+  };
+
+  const handleExportDoc = () => {
+    const rows = (reportQuery.data ?? [])
+      .map((row) => `
+        <tr>
+          <td>${row.receiptNumber ?? "—"}</td>
+          <td>${row.cashierName}</td>
+          <td>${row.lineItems.join("<br/>") || "—"}</td>
+          <td>${formatCurrency(row.totalAmount)}</td>
+          <td style="text-transform:capitalize">${row.paymentMethod}</td>
+          <td>${new Date(row.createdAt).toLocaleString()}</td>
+          <td>${row.status === "voided" ? "Void" : "Completed"}</td>
+        </tr>`)
+      .join("");
+
+    const breakdownRows = cashierBreakdown.length > 1
+      ? cashierBreakdown.map((item) => `
+          <tr>
+            <td>${item.cashierName}</td>
+            <td>${formatCurrency(item.completedTotal)}</td>
+            <td>${formatCurrency(item.voidedTotal)}</td>
+            <td>${formatCurrency(item.net)}</td>
+          </tr>`).join("")
+      : "";
+
+    const html = `
+      <html xmlns:o="urn:schemas-microsoft-com:office:office"
+            xmlns:w="urn:schemas-microsoft-com:office:word"
+            xmlns="http://www.w3.org/TR/REC-html40">
+      <head><meta charset="utf-8"/>
+      <style>
+        body { font-family: Calibri, Arial, sans-serif; font-size: 11pt; color: #0f172a; }
+        h1 { font-size: 16pt; margin-bottom: 4px; }
+        h2 { font-size: 13pt; margin-top: 18pt; margin-bottom: 6px; }
+        table { border-collapse: collapse; width: 100%; margin-top: 8px; }
+        th, td { border: 1px solid #cbd5e1; padding: 5px 10px; font-size: 10pt; text-align: left; }
+        th { background: #f1f5f9; font-weight: bold; }
+      </style></head>
+      <body>
+        <h1>Daily Cash Collection Report</h1>
+        <p><b>Date:</b> ${formattedDate} &nbsp;&nbsp; <b>Cashier:</b> ${selectedCashierLabel}</p>
+
+        <h2>Summary</h2>
+        <table>
+          <tr><th>Metric</th><th>Value</th></tr>
+          <tr><td>Total Cash Sales</td><td>${formatCurrency(summary.totalCashSales)}</td></tr>
+          <tr><td>Total Voided Sales</td><td>${formatCurrency(summary.totalVoidedSales)}</td></tr>
+          <tr><td>Net Sales (excl. voids)</td><td>${formatCurrency(summary.netCollection)}</td></tr>
+          <tr><td>Rental Revenue</td><td>${formatCurrency(summary.totalRental)}</td></tr>
+          <tr><td>Merchandise Sales</td><td>${formatCurrency(summary.totalSalesMerch)}</td></tr>
+          <tr><td>Receipt Range</td><td>${summary.receiptRange}</td></tr>
+          <tr><td>Receipts Issued</td><td>${summary.totalReceiptsIssued}</td></tr>
+        </table>
+
+        <h2>Transactions</h2>
+        <table>
+          <thead><tr><th>Receipt No.</th><th>Cashier</th><th>Items</th><th>Amount</th><th>Payment</th><th>Date/Time</th><th>Status</th></tr></thead>
+          <tbody>${rows || "<tr><td colspan=7>No data</td></tr>"}</tbody>
+        </table>
+
+        ${cashierBreakdown.length > 1 ? `
+        <h2>Summary by Cashier</h2>
+        <table>
+          <thead><tr><th>Cashier</th><th>Total Sales</th><th>Voided</th><th>Net</th></tr></thead>
+          <tbody>${breakdownRows}</tbody>
+        </table>` : ""}
+      </body></html>`;
+
+    const blob = new Blob([html], { type: "application/msword" });
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement("a");
+    a.href     = url;
+    a.download = `dccr-${selectedDate}.doc`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const handlePrint = () => {
     const markup = buildPrintableMarkup();
-    const printWindow = window.open("", "_blank", "width=900,height=1200");
-    if (!printWindow) return;
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>DCCR ${selectedDate}</title>
-          <style>
-            :root { color-scheme: light; font-family: "Segoe UI", Arial, sans-serif; }
-            body { margin: 24px; color: #0f172a; background: #ffffff; }
-            table { width: 100%; border-collapse: collapse; margin-top: 16px; }
-            th, td { border-bottom: 1px solid #e2e8f0; padding: 8px 12px; text-align: left; font-size: 12px; }
-            th { background: #f8fafc; font-weight: 600; text-transform: uppercase; font-size: 11px; color: #475569; }
-            .summary-grid { display: grid; gap: 12px; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); margin-top: 16px; }
-            .summary-card { border: 1px solid #e2e8f0; border-radius: 8px; padding: 12px; }
-            .summary-card h3 { font-size: 11px; text-transform: uppercase; color: #64748b; margin-bottom: 4px; }
-            .summary-card div { font-size: 16px; font-weight: 600; color: #0f172a; }
-            .report-header { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 16px; }
-            .report-header h1 { font-size: 20px; margin-bottom: 4px; }
-            .report-header p { font-size: 12px; color: #475569; }
-            .section-title { margin-top: 24px; font-size: 14px; font-weight: 600; color: #1e293b; }
-          </style>
-        </head>
-        <body>
-          ${markup}
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-    printWindow.focus();
-    printWindow.print();
+    const html = `<html><head><title>DCCR ${selectedDate}</title></head><body>${markup}</body></html>`;
+
+    const iframe = document.createElement("iframe");
+    iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:0;";
+    document.body.appendChild(iframe);
+    const iframeDoc = iframe.contentDocument ?? iframe.contentWindow?.document;
+    if (!iframeDoc) { document.body.removeChild(iframe); return; }
+    iframeDoc.open();
+    iframeDoc.write(html);
+    iframeDoc.close();
+    iframe.onload = () => {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+      setTimeout(() => { if (document.body.contains(iframe)) document.body.removeChild(iframe); }, 1000);
+    };
   };
 
   const formattedDate = useMemo(() => {
@@ -484,20 +674,6 @@ export function DCCRPage() {
           </p>
         </div>
       </div>
-
-      {!isSupabaseConfigured && (
-        <Card className="border-amber-200 bg-amber-50">
-          <CardHeader className="py-3">
-            <CardTitle className="text-base font-semibold text-amber-800">
-              Supabase connection inactive
-            </CardTitle>
-            <CardDescription className="text-sm text-amber-700">
-              Connect your Supabase project to generate real DCCR data. Showing 0 totals until a
-              connection is configured.
-            </CardDescription>
-          </CardHeader>
-        </Card>
-      )}
 
       <Card>
         <CardHeader className="pb-3">
@@ -521,33 +697,35 @@ export function DCCRPage() {
               />
             </div>
 
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-slate-600">Cashier</label>
-              <Select
-                value={selectedCashier}
-                onValueChange={(value) => setSelectedCashier(value)}
-                disabled={cashiersQuery.isLoading}
-              >
-                <SelectTrigger className="h-10">
-                  <SelectValue placeholder="Select cashier" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="all">All cashiers</SelectItem>
-                  {profile?.id && (
-                    <SelectItem value={profile.id}>
-                      {profile.full_name ? `${profile.full_name} (You)` : "Current cashier"}
-                    </SelectItem>
-                  )}
-                  {cashiersQuery.data
-                    ?.filter((cashier) => cashier.id !== profile?.id)
-                    .map((cashier) => (
-                      <SelectItem key={cashier.id} value={cashier.id}>
-                        {cashier.full_name ?? cashier.id}
+            {!isCashier && (
+              <div className="space-y-2">
+                <label className="text-sm font-medium text-slate-600">Cashier</label>
+                <Select
+                  value={selectedCashier}
+                  onValueChange={(value) => setSelectedCashier(value)}
+                  disabled={cashiersQuery.isLoading}
+                >
+                  <SelectTrigger className="h-10">
+                    <SelectValue placeholder="Select cashier" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="all">All Accounts</SelectItem>
+                    {profile?.id && (
+                      <SelectItem value={profile.id}>
+                        {profile.full_name ? `${profile.full_name} (You)` : "Current cashier"}
                       </SelectItem>
-                    ))}
-                </SelectContent>
-              </Select>
-            </div>
+                    )}
+                    {cashiersQuery.data
+                      ?.filter((cashier) => cashier.id !== profile?.id)
+                      .map((cashier) => (
+                        <SelectItem key={cashier.id} value={cashier.id}>
+                          {cashier.full_name ?? cashier.id}
+                        </SelectItem>
+                      ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
             <div className="flex items-end gap-2">
               <Button
@@ -584,6 +762,24 @@ export function DCCRPage() {
                     <Download className="mr-2 h-4 w-4" />
                     Export PDF
                   </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="hidden sm:inline-flex"
+                    onClick={handleExportExcel}
+                  >
+                    <FileSpreadsheet className="mr-2 h-4 w-4" />
+                    Export Excel
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    className="hidden sm:inline-flex"
+                    onClick={handleExportDoc}
+                  >
+                    <FileType className="mr-2 h-4 w-4" />
+                    Export DOC
+                  </Button>
                 </>
               )}
             </div>
@@ -599,6 +795,14 @@ export function DCCRPage() {
                 <Button type="button" variant="outline" className="flex-1" onClick={handleExportPdf}>
                   <Download className="mr-2 h-4 w-4" />
                   Export PDF
+                </Button>
+                <Button type="button" variant="outline" className="flex-1" onClick={handleExportExcel}>
+                  <FileSpreadsheet className="mr-2 h-4 w-4" />
+                  Excel
+                </Button>
+                <Button type="button" variant="outline" className="flex-1" onClick={handleExportDoc}>
+                  <FileType className="mr-2 h-4 w-4" />
+                  DOC
                 </Button>
               </div>
 
@@ -815,4 +1019,3 @@ export function DCCRPage() {
     </div>
   );
 }
-

@@ -1,11 +1,21 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
-import type { Database } from "@/integrations/supabase/types";
-import { isSupabaseConfigured, supabase } from "@/integrations/supabase/client";
 
-type Profile = Database["public"]["Tables"]["profiles"]["Row"];
+import { authApi } from "@/lib/api";
 
 export type UserRole = "admin" | "cashier" | "accountant" | "hr" | "inventory_clerk" | "manager";
+
+export interface Profile {
+  id: string;
+  full_name: string;
+  username: string;
+  role: UserRole;
+  branch?: string | null;
+  phone?: string | null;
+  avatar_url?: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 type SessionState = {
   profile?: Profile;
@@ -33,51 +43,29 @@ export const useSessionStore = create<SessionState>()(
       setLoading: (value) => set({ loading: value }),
       reset: () => set({ profile: undefined, role: undefined, branchId: null, loading: false }),
       fetchProfile: async () => {
-        if (!isSupabaseConfigured) {
-          set({ profile: undefined, role: undefined, branchId: null, loading: false });
-          return;
-        }
-
         set({ loading: true });
 
         try {
-          const {
-            data: { user },
-            error: userError,
-          } = await supabase.auth.getUser();
-
-          if (userError) throw userError;
-
-          if (!user) {
-            set({ profile: undefined, role: undefined, branchId: null, loading: false });
-            return;
-          }
-
-          const { data: profile, error } = await supabase
-            .from("profiles")
-            .select("*")
-            .eq("id", user.id)
-            .order("created_at", { ascending: false })
-            .limit(1)
-            .maybeSingle();
-
-          if (error) throw error;
+          const { profile } = await authApi.me();
 
           set({
-            profile: profile ?? undefined,
+            profile: profile as unknown as Profile,
             role: (profile?.role as UserRole | undefined) ?? undefined,
-            branchId: profile?.branch ?? null,
+            branchId: (profile?.branch as string | null) ?? null,
             loading: false,
           });
-        } catch (error) {
-          console.error("Failed to fetch profile", error);
+        } catch {
           set({ profile: undefined, role: undefined, branchId: null, loading: false });
         }
       },
     }),
     {
       name: "gs-session-store",
-      partialize: (state) => ({ profile: state.profile, role: state.role, branchId: state.branchId }),
+      partialize: (state) => ({
+        profile: state.profile,
+        role: state.role,
+        branchId: state.branchId,
+      }),
     }
   )
 );
@@ -85,6 +73,3 @@ export const useSessionStore = create<SessionState>()(
 export const selectProfile = (state: SessionState) => state.profile;
 export const selectRole = (state: SessionState) => state.role;
 export const selectLoading = (state: SessionState) => state.loading;
-
-
-

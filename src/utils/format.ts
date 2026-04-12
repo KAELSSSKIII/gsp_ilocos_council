@@ -14,8 +14,20 @@ export function formatNumber(value: number | null | undefined, digits = 0) {
   });
 }
 
+export function formatCurrencyForPdf(value: number): string {
+  return new Intl.NumberFormat("en-PH", {
+    style: "currency",
+    currency: "PHP",
+    currencyDisplay: "code",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+    .format(value)
+    .replace(/\u00A0/g, " ");
+}
+
 export function formatDate(input: string | Date | null | undefined) {
-  if (!input) return "—";
+  if (!input) return "--";
   const date = typeof input === "string" ? new Date(input) : input;
   return date.toLocaleDateString("en-PH", {
     year: "numeric",
@@ -23,6 +35,3 @@ export function formatDate(input: string | Date | null | undefined) {
     day: "numeric",
   });
 }
-
-
-

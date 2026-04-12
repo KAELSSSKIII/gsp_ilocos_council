@@ -1,7 +1,7 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import * as XLSX from "xlsx";
 import { useQuery } from "@tanstack/react-query";
-import { format } from "date-fns";
-import jsPDF from "jspdf";
+import { format, endOfMonth, startOfMonth } from "date-fns";
 import {
   Card,
   CardContent,
@@ -10,168 +10,105 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
+import { FileSpreadsheet } from "lucide-react";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Separator } from "@/components/ui/separator";
-import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
+import api from "@/lib/api";
+import { formatCurrencyForPdf } from "@/utils/format";
 import { Line, LineChart, ResponsiveContainer, Tooltip, XAxis } from "recharts";
 import { cn } from "@/lib/utils";
-import type { Database } from "@/integrations/supabase/types";
+import { useSessionStore, selectProfile } from "@/store/sessionStore";
+import { readBusinessSettings } from "@/utils/businessSettings";
 
 type IncomeRow = {
   date: string;
   grossSales: number;
   discounts: number;
-  returns: number;
   netSales: number;
   cogs: number;
-  operatingExpenses: number;
-  otherIncome: number;
-  otherExpenses: number;
-  incomeTax: number;
-  operatingIncome: number;
-  netIncomeBeforeTax: number;
-  netIncome: number;
 };
 
 type Summary = {
   grossSales: number;
   discounts: number;
-  returns: number;
   netSales: number;
   cogs: number;
-  operatingExpenses: number;
-  otherIncome: number;
-  otherExpenses: number;
-  incomeTax: number;
 };
 
-const buildDemoIncome = (): IncomeRow[] => {
-  const today = new Date();
-  const rows: IncomeRow[] = [];
-  for (let i = 6; i >= 0; i--) {
-    const day = new Date(today);
-    day.setDate(day.getDate() - i);
-    const grossSales = 7500 + Math.random() * 3500;
-    const discounts = grossSales * (0.03 + Math.random() * 0.02);
-    const returns = grossSales * 0.01;
-    const netSales = grossSales - discounts - returns;
-    const cogs = netSales * (0.45 + Math.random() * 0.1);
-    const operatingExpenses = netSales * (0.18 + Math.random() * 0.04);
-    const otherIncome = 150 + Math.random() * 120;
-    const otherExpenses = 90 + Math.random() * 80;
-    const incomeTaxBase = netSales - cogs - operatingExpenses + otherIncome - otherExpenses;
-    const incomeTax = Math.max(incomeTaxBase * 0.1, 0);
-    const operatingIncome = netSales - cogs - operatingExpenses;
-    const netIncomeBeforeTax = operatingIncome + otherIncome - otherExpenses;
-    const netIncome = netIncomeBeforeTax - incomeTax;
-    rows.push({
-      date: format(day, "MMM d"),
-      grossSales,
-      discounts,
-      returns,
-      netSales,
-      cogs,
-      operatingExpenses,
-      otherIncome,
-      otherExpenses,
-      incomeTax,
-      operatingIncome,
-      netIncomeBeforeTax,
-      netIncome,
+type IncomeSaleItem = {
+  unit_cost?: number | null;
+  quantity?: number | null;
+};
+
+type IncomeSaleRow = {
+  created_at?: string | null;
+  status?: string | null;
+  subtotal?: number | null;
+  discount_amount?: number | null;
+  items?: IncomeSaleItem[] | null;
+};
+
+// Build the list of yyyy-MM options for the past 24 months
+const buildMonthOptions = () => {
+  const options: { value: string; label: string }[] = [];
+  const now = new Date();
+  for (let i = 0; i < 24; i++) {
+    const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+    options.push({
+      value: format(d, "yyyy-MM"),
+      label: format(d, "MMMM yyyy"),
     });
   }
-  return rows;
+  return options;
 };
+const MONTH_OPTIONS = buildMonthOptions();
 
-type SaleRecord = Database["public"]["Tables"]["sales"]["Row"] & {
-  sale_items: Array<
-    Pick<Database["public"]["Tables"]["sale_items"]["Row"], "quantity" | "unit_cost">
-  > | null;
-};
+const fetchIncomeData = async (
+  from: string,
+  to: string,
+  cashierId?: string
+): Promise<IncomeRow[]> => {
+  const params = new URLSearchParams({
+    from: new Date(`${from}T00:00:00`).toISOString(),
+    to:   new Date(`${to}T23:59:59`).toISOString(),
+    include_items: "true",
+  });
+  if (cashierId && cashierId !== "all") {
+    params.set("cashier_id", cashierId);
+  }
 
-const fetchIncomeData = async (period: string): Promise<IncomeRow[]> => {
-  const rangeDays = period === "30d" ? 30 : 7;
-  const since = new Date();
-  since.setDate(since.getDate() - (rangeDays - 1));
-
-  const { data, error } = await supabase
-    .from("sales")
-    .select(
-      `
-        id,
-        created_at,
-        subtotal,
-        discount_amount,
-        tax_amount,
-        total_amount,
-        status,
-        sale_items(quantity, unit_cost)
-      `
-    )
-    .gte("created_at", since.toISOString())
-    .order("created_at", { ascending: true });
-
-  if (error) throw error;
+  const { sales } = await api.get<{ sales: IncomeSaleRow[] }>(`/sales?${params.toString()}`);
 
   const grouped = new Map<string, IncomeRow>();
 
-  ((data as SaleRecord[] | null) ?? []).forEach((sale) => {
+  (sales ?? []).forEach((sale) => {
     if (!sale || !sale.created_at) return;
     if (sale.status === "voided") return;
 
-    const saleDate = new Date(sale.created_at);
-    const key = format(saleDate, "yyyy-MM-dd");
+    const key = format(new Date(sale.created_at), "yyyy-MM-dd");
 
-    const entry =
-      grouped.get(key) ??
-      {
-        date: format(saleDate, "MMM d"),
-        grossSales: 0,
-        discounts: 0,
-        returns: 0,
-        netSales: 0,
-        cogs: 0,
-        operatingExpenses: 0,
-        otherIncome: 0,
-        otherExpenses: 0,
-        incomeTax: 0,
-        operatingIncome: 0,
-        netIncomeBeforeTax: 0,
-        netIncome: 0,
-      };
+    const entry = grouped.get(key) ?? {
+      date: format(new Date(sale.created_at), "MMM d"),
+      grossSales: 0,
+      discounts: 0,
+      netSales: 0,
+      cogs: 0,
+    };
 
     const grossSales = Number(sale.subtotal ?? 0);
-    const discounts = Number(sale.discount_amount ?? 0);
-    const returns = 0;
-    const netSales = grossSales - discounts - returns;
-    const cogs = Array.isArray(sale.sale_items)
-      ? sale.sale_items.reduce(
-          (sum, item) => sum + Number(item.unit_cost ?? 0) * Number(item.quantity ?? 0),
+    const discounts  = Number(sale.discount_amount ?? 0);
+    const cogs = Array.isArray(sale.items)
+        ? sale.items.reduce(
+          (sum: number, item) => sum + Number(item.unit_cost ?? 0) * Number(item.quantity ?? 0),
           0
         )
       : 0;
-    const operatingExpenses = 0;
-    const otherIncome = 0;
-    const otherExpenses = 0;
-    const incomeTax = Number(sale.tax_amount ?? 0);
-    const operatingIncome = netSales - cogs - operatingExpenses;
-    const netIncomeBeforeTax = operatingIncome + otherIncome - otherExpenses;
-    const netIncome = netIncomeBeforeTax - incomeTax;
 
     entry.grossSales += grossSales;
-    entry.discounts += discounts;
-    entry.returns += returns;
-    entry.netSales += netSales;
-    entry.cogs += cogs;
-    entry.operatingExpenses += operatingExpenses;
-    entry.otherIncome += otherIncome;
-    entry.otherExpenses += otherExpenses;
-    entry.incomeTax += incomeTax;
-    entry.operatingIncome += operatingIncome;
-    entry.netIncomeBeforeTax += netIncomeBeforeTax;
-    entry.netIncome += netIncome;
+    entry.discounts  += discounts;
+    entry.netSales   += grossSales - discounts;
+    entry.cogs       += cogs;
 
     grouped.set(key, entry);
   });
@@ -181,329 +118,408 @@ const fetchIncomeData = async (period: string): Promise<IncomeRow[]> => {
     .map(([, value]) => value);
 };
 
-const computeSummary = (rows: IncomeRow[]): Summary => {
-  return rows.reduce<Summary>(
+const computeSummary = (rows: IncomeRow[]): Summary =>
+  rows.reduce<Summary>(
     (acc, row) => ({
       grossSales: acc.grossSales + row.grossSales,
-      discounts: acc.discounts + row.discounts,
-      returns: acc.returns + row.returns,
-      netSales: acc.netSales + row.netSales,
-      cogs: acc.cogs + row.cogs,
-      operatingExpenses: acc.operatingExpenses + row.operatingExpenses,
-      otherIncome: acc.otherIncome + row.otherIncome,
-      otherExpenses: acc.otherExpenses + row.otherExpenses,
-      incomeTax: acc.incomeTax + row.incomeTax,
+      discounts:  acc.discounts  + row.discounts,
+      netSales:   acc.netSales   + row.netSales,
+      cogs:       acc.cogs       + row.cogs,
     }),
-    {
-      grossSales: 0,
-      discounts: 0,
-      returns: 0,
-      netSales: 0,
-      cogs: 0,
-      operatingExpenses: 0,
-      otherIncome: 0,
-      otherExpenses: 0,
-      incomeTax: 0,
-    }
+    { grossSales: 0, discounts: 0, netSales: 0, cogs: 0 }
   );
-};
-
-const deriveChartData = (rows: IncomeRow[]) =>
-  rows.map((row) => ({
-    name: row.date,
-    Sales: Number(row.netSales.toFixed(2)),
-    COGS: Number(row.cogs.toFixed(2)),
-    OperatingExpenses: Number(row.operatingExpenses.toFixed(2)),
-  }));
 
 export function IncomeStatementPage() {
-  const [period, setPeriod] = useState("7d");
+  const profile = useSessionStore(selectProfile);
+  const { orgName, councilName } = readBusinessSettings();
+  const orgLabel = `${orgName} — ${councilName}`;
+
+  const [selectedMonth, setSelectedMonth] = useState(() => format(new Date(), "yyyy-MM"));
+  const [selectedCashier, setSelectedCashier] = useState<string>("all");
   const [manualExpenses, setManualExpenses] = useState("");
 
-  const { data: incomeRows = [], isLoading } = useQuery({
-    queryKey: ["income-statement", period],
-    enabled: isSupabaseConfigured,
-    queryFn: () => fetchIncomeData(period),
+  // Default to own profile for cashier role
+  useEffect(() => {
+    if (profile?.role === "cashier" && profile?.id) {
+      setSelectedCashier(profile.id);
+    }
+  }, [profile?.id, profile?.role]);
+
+  const fromDate  = `${selectedMonth}-01`;
+  const toDate    = format(endOfMonth(new Date(fromDate)), "yyyy-MM-dd");
+  const monthLabel = format(startOfMonth(new Date(fromDate)), "MMMM yyyy");
+
+  // Fetch cashiers list
+  const { data: cashiers = [] } = useQuery({
+    queryKey: ["income-statement-cashiers"],
+    queryFn: async () => {
+      const { users } = await api.get<{ users: { id: string; full_name: string; role: string }[] }>("/auth/users");
+      return (users ?? []).filter((u) => ["cashier", "admin", "accountant"].includes(u.role));
+    },
   });
 
-  const rows = useMemo(() => {
-    if (isSupabaseConfigured) {
-      return incomeRows;
-    }
-    return buildDemoIncome();
-  }, [incomeRows, isSupabaseConfigured]);
+  const cashierLabel = useMemo(() => {
+    if (selectedCashier === "all") return "All Accounts";
+    if (selectedCashier === profile?.id) return profile?.full_name ? `${profile.full_name}` : "You";
+    return cashiers.find((c) => c.id === selectedCashier)?.full_name ?? "Unknown";
+  }, [selectedCashier, cashiers, profile]);
 
-  const summary = useMemo(() => computeSummary(rows), [rows]);
+  const { data: incomeRows = [] } = useQuery({
+    queryKey: ["income-statement", fromDate, toDate, selectedCashier],
+    queryFn: () => fetchIncomeData(fromDate, toDate, selectedCashier),
+  });
 
-  const manualExpensesValue = Number(manualExpenses) || 0;
-  const adjustedOperatingExpenses = summary.operatingExpenses + manualExpensesValue;
+  // Operating expenses are org-wide (payroll + vouchers) — only show when viewing all cashiers
+  const { data: pnlData } = useQuery({
+    queryKey: ["pnl-expenses", fromDate, toDate],
+    queryFn: () => api.get<{ expenses: { totalExpenses: number } }>(`/accounting/pnl?from=${fromDate}&to=${toDate}`),
+    enabled: selectedCashier === "all",
+    staleTime: 2 * 60 * 1000,
+  });
+
+  const summary = useMemo(() => computeSummary(incomeRows), [incomeRows]);
+
+  const manualExpensesValue    = Number(manualExpenses) || 0;
+  const realOperatingExpenses  = selectedCashier === "all" ? (pnlData?.expenses?.totalExpenses ?? 0) : 0;
+  const totalOperatingExpenses = realOperatingExpenses + (selectedCashier === "all" ? manualExpensesValue : 0);
   const grossProfit = summary.netSales - summary.cogs;
-  const operatingIncome = grossProfit - adjustedOperatingExpenses;
-  const netIncomeBeforeTax = operatingIncome + summary.otherIncome - summary.otherExpenses;
-  const netIncome = netIncomeBeforeTax - summary.incomeTax;
+  const netIncome   = grossProfit - totalOperatingExpenses;
 
-  const formatCurrencyForPdf = (value: number) =>
-    new Intl.NumberFormat("en-PH", {
-      style: "currency",
-      currency: "PHP",
-      currencyDisplay: "code",
-      minimumFractionDigits: 2,
-    })
-      .format(value)
-      .replace(/\u00A0/g, " ");
+  const isCashierFiltered = selectedCashier !== "all";
 
-  const chartData = useMemo(() => deriveChartData(rows), [rows]);
+  const chartData = incomeRows.map((row) => ({
+    name: row.date,
+    "Net Sales": Number(row.netSales.toFixed(2)),
+    COGS:        Number(row.cogs.toFixed(2)),
+  }));
 
-  const generatePDF = () => {
-    const doc = new jsPDF({ orientation: "landscape" });
+  const fmt = (v: number) => `₱${v.toFixed(2)}`;
+
+  const statementTitle = isCashierFiltered
+    ? `Statement of Income — ${cashierLabel} — ${monthLabel}`
+    : `Statement of Income — ${monthLabel}`;
+
+  const generateExcel = () => {
+    const wb = XLSX.utils.book_new();
+    const rows: Array<Array<string | number>> = [
+      [orgLabel],
+      ["Income Statement"],
+      [`Period: ${monthLabel}`],
+      [`Cashier: ${cashierLabel}`],
+      [`Generated: ${format(new Date(), "MMMM d, yyyy h:mm a")}`],
+      [],
+      ["Line Item", "Amount (₱)"],
+      ["Gross Sales", summary.grossSales],
+      ["Less: Discounts", summary.discounts],
+      ["Net Sales", summary.netSales],
+      ["Less: Cost of Goods Sold", summary.cogs],
+      ["Gross Profit", grossProfit],
+    ];
+
+    if (!isCashierFiltered) {
+      rows.push(
+        ["Less: Operating Expenses", totalOperatingExpenses],
+        ["  — Payroll + Vouchers", realOperatingExpenses],
+        ["  — Ad-hoc (manual)", manualExpensesValue],
+        ["Net Income", netIncome]
+      );
+    } else {
+      rows.push(
+        [],
+        ["Note: Operating expenses are organization-wide and not attributed per cashier."],
+        ["Gross Profit (before org expenses)", grossProfit]
+      );
+    }
+
+    rows.push([], ["Income Tax", "₱0.00 — Tax-exempt (non-stock, non-profit · RA 7278)"]);
+
+    const ws = XLSX.utils.aoa_to_sheet(rows);
+    XLSX.utils.book_append_sheet(wb, ws, "Income Statement");
+    const suffix = isCashierFiltered ? `-${cashierLabel.replace(/\s+/g, "_")}` : "";
+    XLSX.writeFile(wb, `income-statement-${selectedMonth}${suffix}.xlsx`);
+  };
+
+  const generatePDF = async () => {
+    const { default: jsPDF } = await import("jspdf");
+    const doc = new jsPDF({ orientation: "portrait" });
     const generatedAt = format(new Date(), "MMMM d, yyyy h:mm a");
 
     doc.setFont("helvetica", "bold");
-    doc.setFontSize(18);
-    doc.text("Girl Scout Business Suite", 14, 16);
-    doc.setFontSize(14);
-    doc.text("Income Statement", 14, 25);
-    doc.setFontSize(11);
+    doc.setFontSize(16);
+    doc.text(orgLabel, 14, 16);
+    doc.setFontSize(13);
+    doc.text("Income Statement", 14, 24);
     doc.setFont("helvetica", "normal");
-    doc.text(`Reporting Period: Last ${period === "7d" ? "7 days" : "30 days"}`, 14, 33);
-    doc.text(`Generated: ${generatedAt}`, 14, 40);
+    doc.setFontSize(10);
+    doc.text(`Period: ${monthLabel}`, 14, 31);
+    doc.text(`Cashier: ${cashierLabel}`, 14, 37);
+    doc.text(`Generated: ${generatedAt}`, 14, 43);
 
-    const pageWidth = doc.internal.pageSize.getWidth();
-    const startY = 52;
-    const lineHeight = 9;
-    const entries = [
-      ["Gross Sales", formatCurrencyForPdf(summary.grossSales)],
-      ["Discounts", formatCurrencyForPdf(summary.discounts)],
-      ["Sales Returns", formatCurrencyForPdf(summary.returns)],
-      ["Net Sales", formatCurrencyForPdf(summary.netSales)],
-      ["Cost of Goods Sold", formatCurrencyForPdf(summary.cogs)],
-      ["Gross Profit", formatCurrencyForPdf(grossProfit)],
-      ["Operating Expenses", formatCurrencyForPdf(adjustedOperatingExpenses)],
-      ["Operating Income", formatCurrencyForPdf(operatingIncome)],
-      ["Other Income", formatCurrencyForPdf(summary.otherIncome)],
-      ["Other Expenses", formatCurrencyForPdf(summary.otherExpenses)],
-      ["Net Income Before Tax", formatCurrencyForPdf(netIncomeBeforeTax)],
-      ["Income Tax", formatCurrencyForPdf(summary.incomeTax)],
-      ["Net Income", formatCurrencyForPdf(netIncome)],
-    ];
+    const pw = doc.internal.pageSize.getWidth();
+    let y = 56;
+    const lh = 8;
 
-    doc.setFont("helvetica", "bold");
-    doc.setFontSize(12);
-    doc.text("Summary", 14, startY);
-    doc.setFont("helvetica", "normal");
-    doc.setFontSize(11);
-
-    let y = startY + 6;
-    entries.forEach(([label, value]) => {
+    const pdfRow = (label: string, value: string, bold = false) => {
+      if (bold) doc.setFont("helvetica", "bold");
+      else doc.setFont("helvetica", "normal");
+      doc.setFontSize(11);
       doc.text(label, 14, y);
-      doc.text(value, pageWidth - 14, y, { align: "right" });
-      y += lineHeight;
-    });
+      doc.text(value, pw - 14, y, { align: "right" });
+      y += lh;
+    };
+    const sep = () => {
+      doc.setDrawColor(200);
+      doc.line(14, y - 2, pw - 14, y - 2);
+    };
 
-    doc.save(`income-statement-${format(new Date(), "yyyyMMdd-HHmm")}.pdf`);
+    pdfRow("Gross Sales", formatCurrencyForPdf(summary.grossSales), true);
+    pdfRow("Less: Discounts", formatCurrencyForPdf(summary.discounts));
+    sep();
+    pdfRow("Net Sales", formatCurrencyForPdf(summary.netSales), true);
+    pdfRow("Less: Cost of Goods Sold", formatCurrencyForPdf(summary.cogs));
+    sep();
+    pdfRow("Gross Profit", formatCurrencyForPdf(grossProfit), true);
+
+    if (!isCashierFiltered) {
+      pdfRow("Less: Operating Expenses", formatCurrencyForPdf(totalOperatingExpenses));
+      sep();
+      pdfRow("Net Income", formatCurrencyForPdf(netIncome), true);
+    } else {
+      y += 4;
+      doc.setFont("helvetica", "italic");
+      doc.setFontSize(9);
+      doc.setTextColor(120);
+      doc.text("Operating expenses are organization-wide and not attributed per cashier.", 14, y);
+      doc.setTextColor(33);
+      y += 6;
+    }
+
+    y += 4;
+    doc.setFont("helvetica", "italic");
+    doc.setFontSize(9);
+    doc.setTextColor(100);
+    doc.text("Tax-exempt organization (non-stock, non-profit — RA 7278)", 14, y);
+
+    const suffix = isCashierFiltered ? `-${cashierLabel.replace(/\s+/g, "_")}` : "";
+    doc.save(`income-statement-${selectedMonth}${suffix}.pdf`);
   };
 
   return (
-    <div className="pb-24">
-      <div className="mx-auto mt-6 w-full max-w-6xl space-y-6 px-4 sm:px-6 lg:px-8">
-        <div className="flex flex-col gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/40 p-6 shadow-sm sm:flex-row sm:items-center sm:justify-between">
+    <div className="space-y-6 pb-24">
+
+        {/* Header */}
+        <div className="flex flex-col gap-3 rounded-2xl border border-emerald-200 bg-emerald-50/40 p-6 shadow-sm">
           <div>
             <h1 className="text-2xl font-semibold text-emerald-900">Income Statement</h1>
-            <p className="text-sm text-emerald-800/80">Monitor profitability and costs with real-time POS insights.</p>
+            <p className="text-sm text-emerald-800/80">Monthly profitability report — GSP Ilocos Sur Council.</p>
           </div>
-          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-3">
-            <Select value={period} onValueChange={setPeriod}>
-              <SelectTrigger className="h-10 w-full rounded-xl border-emerald-200 bg-white text-emerald-700 shadow-sm sm:w-48">
-                <SelectValue placeholder="Select period" />
-              </SelectTrigger>
-              <SelectContent className="rounded-xl border-emerald-200 shadow-lg">
-                <SelectItem value="7d">Last 7 days</SelectItem>
-                <SelectItem value="30d">Last 30 days</SelectItem>
-              </SelectContent>
-            </Select>
-            <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-white px-3 py-2 shadow-sm">
-              <Label htmlFor="manual-expenses" className="text-xs text-emerald-700">
-                Manual Expenses
-              </Label>
-              <Input
-                id="manual-expenses"
-                type="number"
-                min="0"
-                value={manualExpenses}
-                onChange={(event) => setManualExpenses(event.target.value)}
-                className="h-9 w-28 rounded-lg border-emerald-200 bg-white text-right text-sm"
-                placeholder="0.00"
-              />
-            </div>
-            <Button
-              onClick={generatePDF}
-              className="h-10 rounded-xl bg-emerald-600 px-4 text-sm shadow hover:bg-emerald-700"
+          <div className="flex flex-wrap gap-2 items-center">
+            {/* Month picker */}
+            <label className="sr-only" htmlFor="income-statement-month">Reporting month</label>
+            <select
+              id="income-statement-month"
+              value={selectedMonth}
+              onChange={(e) => setSelectedMonth(e.target.value)}
+              className="h-10 rounded-xl border border-emerald-200 bg-white px-3 text-sm text-emerald-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-300"
             >
-              Export to PDF
+              {MONTH_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>{opt.label}</option>
+              ))}
+            </select>
+
+            {/* Cashier picker */}
+            <label className="sr-only" htmlFor="income-statement-cashier">Cashier filter</label>
+            <select
+              id="income-statement-cashier"
+              value={selectedCashier}
+              onChange={(e) => setSelectedCashier(e.target.value)}
+              disabled={profile?.role === "cashier"}
+              className="h-10 rounded-xl border border-emerald-200 bg-white px-3 text-sm text-emerald-700 shadow-sm focus:outline-none focus:ring-2 focus:ring-emerald-300 disabled:opacity-60"
+            >
+              <option value="all">All Accounts</option>
+              {cashiers.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.full_name}{c.id === profile?.id ? " (You)" : ""}
+                </option>
+              ))}
+            </select>
+
+            {/* Manual expenses — only for all-cashier view */}
+            {!isCashierFiltered && (
+              <div className="flex items-center gap-2 rounded-xl border border-emerald-200 bg-white px-3 py-2 shadow-sm">
+                <Label htmlFor="manual-expenses" className="text-xs text-emerald-700 whitespace-nowrap">
+                  + Ad-hoc Expenses
+                </Label>
+                <Input
+                  id="manual-expenses"
+                  type="number"
+                  min="0"
+                  value={manualExpenses}
+                  onChange={(e) => setManualExpenses(e.target.value)}
+                  className="h-9 w-28 rounded-lg border-emerald-200 bg-white text-right text-sm"
+                  placeholder="0.00"
+                />
+              </div>
+            )}
+
+            <Button onClick={generatePDF} className="h-10 rounded-xl bg-emerald-600 px-4 text-sm shadow hover:bg-emerald-700">
+              Export PDF
+            </Button>
+            <Button onClick={generateExcel} variant="outline" className="h-10 rounded-xl border-emerald-300 px-4 text-sm shadow hover:bg-emerald-50">
+              <FileSpreadsheet className="mr-2 h-4 w-4" />
+              Export Excel
             </Button>
           </div>
         </div>
 
-        <div className="grid gap-6 md:grid-cols-4">
-          <Card className="rounded-2xl border border-emerald-200 bg-white shadow-md">
-            <CardHeader className="pb-2">
-              <CardDescription className="text-xs uppercase tracking-wide text-emerald-700">
-                Net Sales
-              </CardDescription>
-              <CardTitle className="text-2xl font-semibold text-emerald-900">
-                ₱{summary.netSales.toFixed(2)}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-xs text-emerald-700/80">
-              Gross sales less returns and discounts for the period.
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-2xl border border-emerald-200 bg-white shadow-md">
-            <CardHeader className="pb-2">
-              <CardDescription className="text-xs uppercase tracking-wide text-emerald-700">
-                Cost of Goods Sold
-              </CardDescription>
-              <CardTitle className="text-2xl font-semibold text-emerald-900">
-                ₱{summary.cogs.toFixed(2)}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-xs text-emerald-700/80">
-              Direct costs from items sold within the selected window.
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-2xl border border-emerald-200 bg-white shadow-md">
-            <CardHeader className="pb-2">
-              <CardDescription className="text-xs uppercase tracking-wide text-emerald-700">
-                Gross Profit
-              </CardDescription>
-              <CardTitle className="text-2xl font-semibold text-emerald-900">
-                ₱{grossProfit.toFixed(2)}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-xs text-emerald-700/80">
-              Sales minus cost of goods sold.
-            </CardContent>
-          </Card>
-
-          <Card className="rounded-2xl border border-emerald-200 bg-white shadow-md">
-            <CardHeader className="pb-2">
-              <CardDescription className="text-xs uppercase tracking-wide text-emerald-700">
-                Net Income
-              </CardDescription>
-              <CardTitle className={cn("text-2xl font-semibold", netIncome >= 0 ? "text-emerald-900" : "text-red-600")}>
-                ₱{netIncome.toFixed(2)}
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="text-xs text-emerald-700/80">
-              Gross profit less total expenses.
-            </CardContent>
-          </Card>
+        {/* KPI cards */}
+        <div className="grid gap-4 md:grid-cols-4">
+          {[
+            { label: "Gross Sales",  value: summary.grossSales, desc: "Total sales before discounts" },
+            { label: "Net Sales",    value: summary.netSales,   desc: "After discounts" },
+            { label: "Gross Profit", value: grossProfit,        desc: summary.netSales > 0 ? `${((grossProfit / summary.netSales) * 100).toFixed(1)}% margin` : "Net sales minus COGS" },
+            {
+              label: isCashierFiltered ? "Gross Profit" : "Net Income",
+              value: isCashierFiltered ? grossProfit : netIncome,
+              desc:  isCashierFiltered ? "Before org-wide expenses" : "After all operating expenses",
+              highlight: true,
+            },
+          ].map(({ label, value, desc, highlight }) => (
+            <Card key={label + desc} className="rounded-2xl border border-emerald-200 bg-white shadow-md">
+              <CardHeader className="pb-2">
+                <CardDescription className="text-xs uppercase tracking-wide text-emerald-700">{label}</CardDescription>
+                <CardTitle className={cn("text-2xl font-semibold", highlight && value < 0 ? "text-red-600" : "text-emerald-900")}>
+                  {fmt(value)}
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-xs text-emerald-700/80">{desc}</CardContent>
+            </Card>
+          ))}
         </div>
 
+        {/* Trend chart */}
         <Card className="rounded-2xl border border-emerald-200/70 bg-white shadow-lg">
-          <CardHeader className="flex flex-col gap-2 border-b border-emerald-100 pb-4">
-            <CardTitle className="text-lg font-semibold text-emerald-900">Income Trends</CardTitle>
-            <p className="text-xs text-emerald-700/80">
-              Visualise sales, cost of goods, and expense fluctuations across the selected window.
-            </p>
+          <CardHeader className="border-b border-emerald-100 pb-4">
+            <CardTitle className="text-lg font-semibold text-emerald-900">
+              Sales vs COGS — {isCashierFiltered ? `${cashierLabel} · ` : ""}{monthLabel}
+            </CardTitle>
           </CardHeader>
-          <CardContent className="h-[320px] pt-6">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData}>
-                <XAxis dataKey="name" stroke="#0f766e" />
-                <Tooltip />
-                <Line type="monotone" dataKey="Sales" stroke="#047857" strokeWidth={2} dot={false} />
-                <Line type="monotone" dataKey="COGS" stroke="#f97316" strokeWidth={2} dot={false} />
-                <Line
-                  type="monotone"
-                  dataKey="OperatingExpenses"
-                  stroke="#ef4444"
-                  strokeWidth={2}
-                  dot={false}
-                />
-              </LineChart>
-            </ResponsiveContainer>
+          <CardContent className="pt-6">
+            <div className="space-y-4">
+              <div className="h-[280px]" aria-label={`Income statement trend chart for ${monthLabel}`} role="img">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={chartData}>
+                    <XAxis dataKey="name" stroke="#0f766e" tick={{ fontSize: 11 }} />
+                    <Tooltip formatter={(v: number) => fmt(v)} />
+                    <Line type="monotone" dataKey="Net Sales" stroke="#047857" strokeWidth={2} dot={false} />
+                    <Line type="monotone" dataKey="COGS"      stroke="#f97316" strokeWidth={2} dot={false} />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+              <div className="overflow-x-auto rounded-lg border border-emerald-200/70">
+                <table className="min-w-full text-sm">
+                  <thead className="bg-emerald-50/70 text-left text-emerald-900">
+                    <tr>
+                      <th className="px-3 py-2 font-medium">Period</th>
+                      <th className="px-3 py-2 font-medium">Net Sales</th>
+                      <th className="px-3 py-2 font-medium">COGS</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {chartData.map((row) => (
+                      <tr key={row.name} className="border-t border-emerald-100">
+                        <td className="px-3 py-2 text-emerald-800">{row.name}</td>
+                        <td className="px-3 py-2 text-emerald-900">{fmt(row["Net Sales"])}</td>
+                        <td className="px-3 py-2 text-emerald-900">{fmt(row.COGS)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           </CardContent>
         </Card>
 
+        {/* Statement */}
         <Card className="rounded-2xl border border-emerald-200/70 bg-white shadow-lg">
-          <CardHeader className="flex flex-col gap-2 border-b border-emerald-100 pb-4">
-            <CardTitle className="text-lg font-semibold text-emerald-900">Statement Overview</CardTitle>
-            <p className="text-xs text-emerald-700/80">
-              Breakdown of revenue, expenses, and profitability for audit or presentation purposes.
-            </p>
+          <CardHeader className="border-b border-emerald-100 pb-4">
+            <CardTitle className="text-lg font-semibold text-emerald-900">{statementTitle}</CardTitle>
+            <p className="text-xs text-emerald-700/80">{orgLabel}</p>
+            {isCashierFiltered && (
+              <p className="text-xs text-amber-600">
+                Showing sales by <strong>{cashierLabel}</strong> only. Operating expenses are org-wide and shown separately.
+              </p>
+            )}
           </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex flex-col gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 p-4 shadow-inner">
-              <div className="flex items-center justify-between text-sm font-semibold text-emerald-900">
-                <span>Gross Sales</span>
-                <span>₱{summary.grossSales.toFixed(2)}</span>
+          <CardContent className="pt-4">
+            <div className="flex flex-col gap-2 rounded-xl border border-emerald-200 bg-emerald-50/70 p-5 shadow-inner text-sm">
+
+              <div className="flex justify-between font-semibold text-emerald-900">
+                <span>Gross Sales</span><span>{fmt(summary.grossSales)}</span>
+              </div>
+              <div className="flex justify-between text-emerald-800">
+                <span>Less: Discounts</span><span>({fmt(summary.discounts)})</span>
               </div>
               <Separator className="bg-emerald-200/70" />
-              <div className="flex items-center justify-between text-sm text-emerald-800">
-                <span>Less: Discounts</span>
-                <span>₱{summary.discounts.toFixed(2)}</span>
+              <div className="flex justify-between font-semibold text-emerald-900">
+                <span>Net Sales</span><span>{fmt(summary.netSales)}</span>
               </div>
-              <div className="flex items-center justify-between text-sm text-emerald-800">
-                <span>Less: Sales Returns</span>
-                <span>₱{summary.returns.toFixed(2)}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm font-semibold text-emerald-900">
-                <span>Net Sales</span>
-                <span>₱{summary.netSales.toFixed(2)}</span>
+
+              <div className="flex justify-between text-emerald-800 mt-1">
+                <span>Less: Cost of Goods Sold</span><span>({fmt(summary.cogs)})</span>
               </div>
               <Separator className="bg-emerald-200/70" />
-              <div className="flex items-center justify-between text-sm text-emerald-800">
-                <span>Cost of Goods Sold</span>
-                <span>₱{summary.cogs.toFixed(2)}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm font-semibold text-emerald-900">
+              <div className="flex justify-between font-semibold text-emerald-900">
                 <span>Gross Profit</span>
-                <span>₱{grossProfit.toFixed(2)}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm text-emerald-800">
-                <span>Operating Expenses</span>
-                <span>₱{adjustedOperatingExpenses.toFixed(2)}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm font-semibold text-emerald-900">
-                <span>Operating Income</span>
-                <span>₱{operatingIncome.toFixed(2)}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm text-emerald-800">
-                <span>Other Income</span>
-                <span>₱{summary.otherIncome.toFixed(2)}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm text-emerald-800">
-                <span>Other Expenses</span>
-                <span>₱{summary.otherExpenses.toFixed(2)}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm font-semibold text-emerald-900">
-                <span>Net Income Before Tax</span>
-                <span>₱{netIncomeBeforeTax.toFixed(2)}</span>
-              </div>
-              <div className="flex items-center justify-between text-sm text-emerald-800">
-                <span>Income Tax</span>
-                <span>₱{summary.incomeTax.toFixed(2)}</span>
-              </div>
-              <Separator className="bg-emerald-200/70" />
-              <div className="flex items-center justify-between text-sm font-semibold text-emerald-900">
-                <span>Net Income</span>
-                <span className={cn(netIncome >= 0 ? "text-emerald-700" : "text-red-600")}>
-                  ₱{netIncome.toFixed(2)}
+                <span>
+                  {fmt(grossProfit)}
+                  {summary.netSales > 0 && (
+                    <span className="ml-2 text-xs font-normal text-emerald-600">
+                      ({((grossProfit / summary.netSales) * 100).toFixed(1)}%)
+                    </span>
+                  )}
                 </span>
               </div>
+
+              {!isCashierFiltered && (
+                <>
+                  <div className="flex justify-between text-emerald-800 mt-1">
+                    <span className="flex flex-col">
+                      <span>Less: Operating Expenses</span>
+                      <span className="text-xs text-emerald-600">
+                        Payroll + vouchers: {fmt(realOperatingExpenses)}
+                        {manualExpensesValue > 0 && ` · Ad-hoc: ${fmt(manualExpensesValue)}`}
+                      </span>
+                    </span>
+                    <span>({fmt(totalOperatingExpenses)})</span>
+                  </div>
+                  <Separator className="bg-emerald-300 my-1" />
+                  <div className={cn("flex justify-between font-bold text-base", netIncome >= 0 ? "text-emerald-900" : "text-red-600")}>
+                    <span>Net Income</span><span>{fmt(netIncome)}</span>
+                  </div>
+                </>
+              )}
+
+              {isCashierFiltered && (
+                <p className="text-xs text-amber-600/80 mt-1 italic">
+                  Operating expenses (payroll, vouchers) are organization-wide costs — not attributed to individual cashiers.
+                  Switch to "All Accounts" to view the full income statement with net income.
+                </p>
+              )}
+
+              <p className="text-xs text-emerald-600/80 mt-2 italic">
+                Income tax: ₱0.00 — Tax-exempt organization (non-stock, non-profit · RA 7278)
+              </p>
             </div>
-            <p className="text-xs text-emerald-700/80">
-              Expenses include manual adjustments entered above. Update manual expenses for ad-hoc cost entries such as
-              utilities, payroll, or marketing.
-            </p>
+
+            {!isCashierFiltered && (
+              <p className="mt-3 text-xs text-emerald-700/70">
+                Operating expenses are pulled from posted payroll and approved vouchers for {monthLabel}.
+                Use the "Ad-hoc Expenses" field above to add any costs not yet recorded (utilities, petty cash, etc.).
+              </p>
+            )}
           </CardContent>
         </Card>
-      </div>
     </div>
   );
 }
-
-

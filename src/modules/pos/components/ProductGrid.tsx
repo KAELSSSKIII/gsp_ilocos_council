@@ -3,13 +3,11 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ProductRow, CategoryRow } from "@/modules/pos/types";
-import { ShoppingBag } from "lucide-react";
+import { ChevronDown, FolderTree, ShoppingBag } from "lucide-react";
 import { formatCurrency } from "@/utils/format";
 import { cn } from "@/lib/utils";
-import Barcode from "react-barcode";
-
-const PRODUCT_PLACEHOLDER_IMG = "https://placehold.co/400x320?text=Girl+Scout+Product";
-const RENTAL_CATEGORY_NAMES = new Set(["Hall Rental", "Room Rental", "Hall & Room Rentals"]);
+import { isRentalProduct } from "@/modules/pos/utils/rental";
+import { CATEGORY_GROUPS } from "@/modules/pos/utils/categoryGroups";
 
 type ProductGridProps = {
   products: ProductRow[];
@@ -19,89 +17,6 @@ type ProductGridProps = {
   onAddToCart: (product: ProductRow) => void;
   recentlyAddedProductId?: string | null;
 };
-
-const CATEGORY_GROUPS = [
-  {
-    key: "tops",
-    label: "Tops",
-    icon: "👕",
-    names: [
-      "BLOUSE SR/CDT.",
-      "POLO SHIRT (Combi)",
-      "BLACK ADULT POLO SHIRT",
-      "MEN'S BLACK POLO",
-      "FUN T-SHIRT",
-      "RAGLAN SHIRT",
-      "FUN SHIRT Raglan-Everyway",
-      "FUN SHIRT Professionals - White",
-      "Uniforms",
-      "Shirts",
-    ],
-  },
-  {
-    key: "bottoms",
-    label: "Bottoms",
-    icon: "👖",
-    names: [
-      "JOGGING PANTS",
-      "BERMUDA SHORTS (Sta&Jun)",
-      "BERMUDA SHORT-Sen&Cad",
-      "Green Pants-Wool",
-      "Green Pants Wool (old price)",
-      "PLAIN GREEN SKIRT",
-    ],
-  },
-  {
-    key: "outerwear",
-    label: "Outerwear",
-    icon: "🧥",
-    names: ["ADULT JACKET", "VEST - WOOL", "VEST - WOOL EMBRO", "GSP TERNO (SET)"],
-  },
-  {
-    key: "accessories",
-    label: "Accessories",
-    icon: "🎒",
-    names: [
-      "SCARF",
-      "NYLON BELT",
-      "SOCKS",
-      "STRIPS",
-      "SASH",
-      "CAPS",
-      "PINS",
-      "FACE MASK",
-      "Keychain-Gespie",
-      "Goodwill Pouch",
-      "Magic Carpet",
-      "BADGES",
-      "Accessories",
-    ],
-  },
-  {
-    key: "manuals",
-    label: "Manuals / Books",
-    icon: "📚",
-    names: ["MANUAL (Old)", "MANUAL (New)", "HANDBOOK (Old)", "HANDBOOK (New)", "A Camping we go", "Songbook"],
-  },
-  {
-    key: "dolls",
-    label: "Dolls / Memorabilia",
-    icon: "🎭",
-    names: ["GESPIE Doll (big)", "Rag Doll Twinkler (S)", "TWINKLER"],
-  },
-  {
-    key: "age",
-    label: "Groups / Age Sets",
-    icon: "⭐",
-    names: ["STAR", "JUNIOR", "SENIOR", "CADET", "RTW GIRLS:", "CLOTH:", "T-SHIRTS:"],
-  },
-  {
-    key: "rentals",
-    label: "Hall & Room Rentals",
-    icon: "🏛️",
-    names: ["Hall Rental", "Room Rental", "Hall & Room Rentals"],
-  },
-];
 
 export function ProductGrid({
   products,
@@ -116,15 +31,6 @@ export function ProductGrid({
   const categoryBarRef = useRef<HTMLDivElement>(null);
   const prevSelectedCategoryRef = useRef<string>(selectedCategory);
   const prevCategoriesRef = useRef<number>(categories.length);
-  const rentalCategoryIds = useMemo(
-    () =>
-      new Set(
-        categories
-          .filter((category) => RENTAL_CATEGORY_NAMES.has(category.name))
-          .map((category) => category.id)
-      ),
-    [categories]
-  );
 
   const groupedCategories = useMemo(() => {
     const categoryByName = new Map(categories.map((category) => [category.name, category]));
@@ -151,7 +57,7 @@ export function ProductGrid({
       groups.push({
         key: "other",
         label: "Other Categories",
-        icon: "🗂️",
+        icon: FolderTree,
         names: [],
         categories: [...ungrouped].sort((a, b) => a.name.localeCompare(b.name)),
       });
@@ -241,9 +147,10 @@ export function ProductGrid({
           {groupedCategories.length === 0 ? (
             <p className="text-sm text-muted-foreground">No categories available.</p>
           ) : (
-            <div className="flex flex-wrap items-start gap-3 overflow-visible relative">
+            <div className="relative flex flex-wrap items-start gap-3 overflow-visible">
               {groupedCategories.map((group) => {
                 const isOpen = openGroup === group.key;
+                const GroupIcon = group.icon;
                 return (
                   <div
                     key={group.key}
@@ -264,17 +171,12 @@ export function ProductGrid({
                       )}
                     >
                       <span className="flex items-center gap-2">
-                        <span className="text-lg leading-none">{group.icon}</span>
+                        <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
+                          <GroupIcon className="h-4 w-4" />
+                        </span>
                         {group.label}
                       </span>
-                      <span
-                        className={cn(
-                          "text-xs font-medium text-muted-foreground transition-transform",
-                          isOpen ? "rotate-180" : ""
-                        )}
-                      >
-                        ▼
-                      </span>
+                      <ChevronDown className={cn("h-4 w-4 text-muted-foreground transition-transform", isOpen ? "rotate-180" : "")} />
                     </button>
                     {isOpen && (
                       <div className="absolute left-0 top-full z-20 mt-2 w-max min-w-[200px] max-w-[280px] rounded-xl border border-border/80 bg-card shadow-lg">
@@ -287,11 +189,11 @@ export function ProductGrid({
                                   key={category.id}
                                   variant={isActive ? "default" : "outline"}
                                   size="sm"
-                                onClick={() => {
-                                  setLastClosedCategory(category.id);
-                                  onSelectCategory(category.id);
-                                  setOpenGroup(null);
-                                }}
+                                  onClick={() => {
+                                    setLastClosedCategory(category.id);
+                                    onSelectCategory(category.id);
+                                    setOpenGroup(null);
+                                  }}
                                   className={cn(
                                     "justify-start rounded-lg border text-sm font-medium transition-all",
                                     isActive
@@ -318,17 +220,19 @@ export function ProductGrid({
       <div className="grid grid-cols-2 items-stretch justify-items-center gap-4 sm:grid-cols-2 md:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5">
         {products.map((product) => {
           const inactive = !product.is_active;
-          const barcodeValue = product.sku || product.id;
           const wasJustAdded = recentlyAddedProductId === product.id;
-          const isRental = product.category_id ? rentalCategoryIds.has(product.category_id) : false;
+          const isRental = isRentalProduct(product);
           const outOfStock = !isRental && product.stock_quantity <= 0;
+          const isLowStock = !isRental && !outOfStock && product.reorder_level != null && product.stock_quantity <= product.reorder_level;
           const availabilityLabel = isRental
             ? inactive
               ? "Unavailable"
               : "Available"
             : product.stock_quantity <= 0
               ? "Out of stock"
-              : `${product.stock_quantity} in stock`;
+              : isLowStock
+                ? `Low stock (${product.stock_quantity})`
+                : `${product.stock_quantity} in stock`;
           const availabilityVariant = inactive || outOfStock ? "destructive" : "secondary";
           return (
             <Card
@@ -342,24 +246,18 @@ export function ProductGrid({
               )}
             >
               <CardContent className="flex h-full flex-col p-0">
-                <div className="relative aspect-[4/3] w-full bg-muted/50">
-                  <img
-                    src={product.image_url || PRODUCT_PLACEHOLDER_IMG}
-                    alt={product.name}
-                    className="h-full w-full object-cover transition duration-200 group-hover:scale-[1.02]"
-                    loading="lazy"
-                  />
-                  {inactive && (
-                    <span className="absolute left-2 top-2 rounded bg-destructive px-2 py-1 text-[11px] font-semibold text-destructive-foreground">
-                      Inactive
-                    </span>
-                  )}
-                </div>
                 <div className="flex h-full flex-col gap-4 p-4">
                   <div className="space-y-3">
                     <div className="flex items-start justify-between gap-3">
                       <div className="space-y-1">
-                        <h3 className="truncate text-[13px] font-semibold text-card-foreground">{product.name}</h3>
+                        <div className="flex items-center gap-2">
+                          <h3 className="truncate text-[13px] font-semibold text-card-foreground">{product.name}</h3>
+                          {inactive && (
+                            <span className="shrink-0 rounded bg-destructive px-2 py-0.5 text-[11px] font-semibold text-destructive-foreground">
+                              Inactive
+                            </span>
+                          )}
+                        </div>
                         <p
                           className="text-[11px] text-muted-foreground"
                           style={{ whiteSpace: "nowrap" }}
@@ -371,31 +269,19 @@ export function ProductGrid({
                           <p className="text-[11px] text-muted-foreground/80">Size: {product.size}</p>
                         )}
                       </div>
-                      <Badge variant={availabilityVariant}>
-                        {availabilityLabel}
-                      </Badge>
-                    </div>
-
-                    <div className="flex flex-col items-center">
-                      {barcodeValue ? (
-                        <>
-                          <Barcode
-                            value={barcodeValue}
-                            format="CODE128"
-                            height={48}
-                            width={1.1}
-                            displayValue={false}
-                            background="transparent"
-                            lineColor="#0f172a"
-                          />
-                          <span className="text-[10px] uppercase tracking-wide text-muted-foreground/70">
-                            {barcodeValue}
-                          </span>
-                        </>
+                      {outOfStock ? (
+                        <span
+                          className="mt-1 h-2.5 w-2.5 shrink-0 rounded-full bg-destructive"
+                          title="Out of stock"
+                        />
+                      ) : isLowStock ? (
+                        <Badge variant="outline" className="border-amber-500 bg-amber-50 text-amber-700 dark:bg-amber-950 dark:text-amber-400">
+                          {availabilityLabel}
+                        </Badge>
                       ) : (
-                        <span className="text-[10px] uppercase tracking-wide text-destructive">
-                          No barcode available
-                        </span>
+                        <Badge variant={availabilityVariant}>
+                          {availabilityLabel}
+                        </Badge>
                       )}
                     </div>
                   </div>

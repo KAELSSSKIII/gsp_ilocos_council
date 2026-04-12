@@ -1,0 +1,17 @@
+node_modules
+dist
+.env
+.env.local
+.env.development
+.env.development.local
+.env.docker
+.git
+.gitignore
+.vscode
+.idea
+*.DS_Store
+Thumbs.db
+LOCAL_SETUP.md
+README.md
+supabase/.branches
+supabase/.temp

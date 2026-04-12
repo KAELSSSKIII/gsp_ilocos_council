@@ -1,45 +1,149 @@
 import { useMemo, useState } from "react";
-import { useForm } from "react-hook-form";
-import { zodResolver } from "@hookform/resolvers/zod";
-import { z } from "zod";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
+import { useQuery } from "@tanstack/react-query";
 import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+  ArrowUpRight,
+  Boxes,
+  Search,
+  WalletCards,
+} from "lucide-react";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import api from "@/lib/api";
 import { useDashboardData } from "@/modules/dashboard/hooks/useDashboardData";
-import { formatCurrency } from "@/utils/format";
+import { gradientId } from "@/modules/dashboard/utils/chartUtils";
+import { formatCurrency, formatDate } from "@/utils/format";
+import { motion, AnimatePresence, type Variants } from "framer-motion";
+import { useSessionStore, selectProfile } from "@/store/sessionStore";
+import type { UserRole } from "@/lib/permissions";
 import {
   Area,
   AreaChart,
   Bar,
   BarChart,
   CartesianGrid,
-  XAxis,
-  YAxis,
-  Tooltip,
-  ResponsiveContainer,
   Line,
   LineChart,
+  ResponsiveContainer,
+  Tooltip,
   TooltipProps,
+  XAxis,
+  YAxis,
 } from "recharts";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { gradientId } from "@/modules/dashboard/utils/chartUtils";
-import { motion, AnimatePresence } from "framer-motion";
-import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
-import { toast } from "sonner";
-import { Loader2, UserPlus } from "lucide-react";
+
+const containerVariants: Variants = {
+  hidden: { opacity: 0, y: 18 },
+  visible: {
+    opacity: 1,
+    y: 0,
+    transition: {
+      duration: 0.4,
+      staggerChildren: 0.08,
+      ease: "easeOut",
+    },
+  },
+};
+
+const itemVariants: Variants = {
+  hidden: { opacity: 0, y: 20 },
+  visible: { opacity: 1, y: 0, transition: { duration: 0.35, ease: "easeOut" } },
+};
+
+const METRIC_ROLES: Record<string, readonly UserRole[]> = {
+  "Sales (30d)":    ["admin", "accountant", "manager"],
+  "Transactions":   ["admin", "accountant", "manager"],
+  "Active SKUs":    ["admin", "accountant", "inventory_clerk"],
+  "Team Members":   ["admin", "hr", "manager"],
+};
 
 export function DashboardPage() {
-  const { metrics, recentSales, lowStock, currency, loading, salesAnalytics } = useDashboardData();
+  const { metrics, lowStock, currency, loading, salesAnalytics } = useDashboardData();
+  const profile = useSessionStore(selectProfile);
+  const role = profile?.role as UserRole | undefined;
+
+  const visibleMetrics = metrics.filter((m) => {
+    const allowed = METRIC_ROLES[m.title];
+    return !allowed || !role || allowed.includes(role);
+  });
+
+  const showSalesFeed    = !role || ["admin", "accountant", "manager"].includes(role);
+  const showLowStock     = !role || ["admin", "inventory_clerk"].includes(role);
+  const showAnalytics    = !role || ["admin", "accountant", "manager"].includes(role);
+
   const [salesView, setSalesView] = useState<"daily" | "weekly" | "monthly">("daily");
+  const [transactionSearch, setTransactionSearch] = useState("");
+
+  // ── Transaction feed date filter ──────────────────────────────────────────
+  type TxnPreset = "today" | "week" | "month" | "last-month";
+  const [txnPreset, setTxnPreset] = useState<TxnPreset | null>("month");
+  const [browseMonth, setBrowseMonth] = useState<string>(""); // "YYYY-MM" when preset is null
+
+  const monthOptions = useMemo(() => {
+    const now = new Date();
+    return Array.from({ length: 24 }, (_, i) => {
+      const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+      const value = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
+      const label = d.toLocaleDateString("en-US", { month: "long", year: "numeric" });
+      return { value, label };
+    });
+  }, []);
+
+  const { txnFrom, txnTo } = useMemo(() => {
+    const now = new Date();
+    if (txnPreset === "today") {
+      return {
+        txnFrom: new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString(),
+        txnTo:   new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999).toISOString(),
+      };
+    }
+    if (txnPreset === "week") {
+      const start = new Date(now);
+      start.setDate(now.getDate() - now.getDay());
+      start.setHours(0, 0, 0, 0);
+      return { txnFrom: start.toISOString(), txnTo: now.toISOString() };
+    }
+    if (txnPreset === "last-month") {
+      return {
+        txnFrom: new Date(now.getFullYear(), now.getMonth() - 1, 1).toISOString(),
+        txnTo:   new Date(now.getFullYear(), now.getMonth(), 0, 23, 59, 59, 999).toISOString(),
+      };
+    }
+    if (txnPreset === "month") {
+      return {
+        txnFrom: new Date(now.getFullYear(), now.getMonth(), 1).toISOString(),
+        txnTo:   now.toISOString(),
+      };
+    }
+    // browse a specific past month
+    const [y, m] = browseMonth ? browseMonth.split("-").map(Number) : [now.getFullYear(), now.getMonth() + 1];
+    return {
+      txnFrom: new Date(y, m - 1, 1).toISOString(),
+      txnTo:   new Date(y, m, 0, 23, 59, 59, 999).toISOString(),
+    };
+  }, [txnPreset, browseMonth]);
+
+  type TxnSale = {
+    id: string;
+    sale_number?: string | null;
+    receipt_number?: number | null;
+    branch: string | null;
+    created_at: string;
+    total_amount: number;
+    status?: string | null;
+    cashier_name?: string | null;
+    cashier_email?: string | null;
+    customer_name?: string | null;
+  };
+
+  const { data: txnData, isLoading: txnLoading } = useQuery({
+    queryKey: ["dashboard-transactions", txnFrom, txnTo],
+    queryFn: () =>
+      api.get<{ sales: TxnSale[] }>(
+        `/sales?from=${encodeURIComponent(txnFrom)}&to=${encodeURIComponent(txnTo)}`,
+      ),
+    staleTime: 60_000,
+  });
 
   const salesDatasets = useMemo(() => {
     const base = salesAnalytics ?? { daily: [], weekly: [], monthly: [] };
@@ -50,181 +154,330 @@ export function DashboardPage() {
     };
   }, [salesAnalytics]);
 
+  const filteredRecentSales = useMemo(() => {
+    const raw = (txnData?.sales ?? []).filter((s) => s.status !== "voided");
+    const query = transactionSearch.trim().toLowerCase();
+    if (!query) return raw.slice(0, 50);
+    return raw
+      .filter((sale) => {
+        const haystack = [
+          sale.sale_number,
+          sale.receipt_number != null ? String(sale.receipt_number) : null,
+          sale.cashier_name,
+          sale.cashier_email,
+          sale.customer_name,
+          sale.branch,
+        ]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase();
+        return haystack.includes(query);
+      })
+      .slice(0, 50);
+  }, [txnData, transactionSearch]);
+
   const currentData = salesDatasets[salesView];
-
   return (
-    <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold text-foreground">Dashboard</h1>
-        <p className="text-muted-foreground">Central overview of Girl Scout operations</p>
-      </div>
-
-      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-        {metrics.map((metric) => (
-          <Card key={metric.title} className="border-border">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium text-card-foreground">{metric.title}</CardTitle>
-              <metric.icon className={`h-4 w-4 ${metric.color}`} />
-            </CardHeader>
-            <CardContent>
-              <div className="text-2xl font-bold text-card-foreground">{metric.value}</div>
-              <p className="text-xs text-muted-foreground mt-1">{metric.change}</p>
-            </CardContent>
-          </Card>
+    <motion.div variants={containerVariants} initial="hidden" animate="visible" className="space-y-6">
+      <motion.div variants={itemVariants} className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {visibleMetrics.map((metric, index) => (
+          <motion.div
+            key={metric.title}
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: index * 0.05, duration: 0.28 }}
+          >
+            <Card className="glass-panel overflow-hidden rounded-[1.75rem] border-white/60">
+              <CardHeader className="pb-3">
+                <div className="flex items-start justify-between gap-4">
+                  <div>
+                    <CardDescription className="text-xs uppercase tracking-[0.24em] text-primary/60">
+                      {metric.title}
+                    </CardDescription>
+                    <CardTitle className="mt-3 text-3xl text-foreground">{metric.value}</CardTitle>
+                  </div>
+                  <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/10">
+                    <metric.icon className={`h-5 w-5 ${metric.color}`} />
+                  </div>
+                </div>
+              </CardHeader>
+              <CardContent className="flex items-center justify-between pt-0">
+                <p className="text-sm text-muted-foreground">{metric.change}</p>
+                <div className="flex items-center gap-1 text-sm font-semibold text-primary">
+                  <ArrowUpRight className="h-4 w-4" />
+                  Active
+                </div>
+              </CardContent>
+            </Card>
+          </motion.div>
         ))}
-      </div>
+      </motion.div>
 
-      <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
-        <Card className="border-border">
-          <CardHeader>
-            <CardTitle className="text-card-foreground">Recent Sales</CardTitle>
-            <CardDescription>Live view of the latest council transactions.</CardDescription>
+      {(showSalesFeed || showLowStock) && (
+        <motion.div variants={itemVariants} className="grid gap-6 lg:grid-cols-[1.55fr_0.95fr]">
+        {showSalesFeed && <Card className="glass-panel rounded-[2rem] border-white/60">
+          <CardHeader className="flex flex-row items-start justify-between gap-4">
+            <div>
+              <CardDescription className="text-xs uppercase tracking-[0.24em] text-primary/60">
+                Recent Sales
+              </CardDescription>
+              <CardTitle className="mt-2 text-3xl text-foreground">Latest transaction pulse</CardTitle>
+              <p className="mt-2 max-w-xl text-sm leading-6 text-muted-foreground">
+                A clean feed of the newest council transactions so the team can confirm activity at a glance.
+              </p>
+            </div>
+            <div className="hidden rounded-2xl border border-primary/10 bg-primary/10 p-3 text-primary sm:flex">
+              <WalletCards className="h-5 w-5" />
+            </div>
           </CardHeader>
-          <CardContent>
-            {loading ? (
-              <div className="space-y-3">
-                {Array.from({ length: 4 }).map((_, index) => (
-                  <div key={index} className="h-12 w-full rounded-md bg-muted" />
-                ))}
+          <CardContent className="space-y-3">
+            {/* Date filter — one-click presets + month browse */}
+            <div className="flex flex-wrap items-center gap-2">
+              {(
+                [
+                  { id: "today",      label: "Today"      },
+                  { id: "week",       label: "This Week"  },
+                  { id: "month",      label: "This Month" },
+                  { id: "last-month", label: "Last Month" },
+                ] as { id: TxnPreset; label: string }[]
+              ).map(({ id, label }) => (
+                <button
+                  key={id}
+                  onClick={() => { setTxnPreset(id); setBrowseMonth(""); }}
+                  className={`rounded-full px-4 py-1.5 text-xs font-medium transition-colors ${
+                    txnPreset === id
+                      ? "bg-primary text-primary-foreground"
+                      : "border border-white/60 bg-white/70 text-foreground hover:bg-white"
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+              <Select
+                value={txnPreset === null ? browseMonth : ""}
+                onValueChange={(v) => { setBrowseMonth(v); setTxnPreset(null); }}
+              >
+                <SelectTrigger className={`h-8 w-[160px] rounded-full text-xs ${txnPreset === null ? "border-primary bg-primary/10 text-primary font-medium" : "border-white/60 bg-white/70"}`}>
+                  <SelectValue placeholder="Browse month…" />
+                </SelectTrigger>
+                <SelectContent>
+                  {monthOptions.map((opt) => (
+                    <SelectItem key={opt.value} value={opt.value} className="text-xs">
+                      {opt.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              {!txnLoading && (
+                <span className="ml-auto text-xs text-muted-foreground">
+                  {filteredRecentSales.length} result{filteredRecentSales.length !== 1 ? "s" : ""}
+                </span>
+              )}
+            </div>
+            {/* Search */}
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={transactionSearch}
+                onChange={(event) => setTransactionSearch(event.target.value)}
+                placeholder="Search POS no., receipt no., cashier, customer, or branch"
+                className="h-11 rounded-[1rem] border-white/60 bg-white/80 pl-10"
+              />
+            </div>
+            {txnLoading ? (
+              Array.from({ length: 4 }).map((_, index) => (
+                <div key={index} className="h-20 rounded-[1.25rem] bg-muted/80" />
+              ))
+            ) : filteredRecentSales.length === 0 ? (
+              <div className="rounded-[1.5rem] border border-dashed border-primary/20 bg-primary/5 p-5 text-sm text-muted-foreground">
+                No transactions matched that search.
               </div>
             ) : (
-              <div className="space-y-4">
-                {recentSales.map((sale) => (
-                  <div key={sale.id} className="flex items-center justify-between">
-                    <div>
-                      <p className="font-medium text-card-foreground">{sale.branch ?? "Main Branch"}</p>
-                      <p className="text-sm text-muted-foreground">{sale.created_at}</p>
-                    </div>
-                    <p className="font-semibold text-primary">{formatCurrency(sale.total_amount, currency)}</p>
+              filteredRecentSales.map((sale) => (
+                <div
+                  key={sale.id}
+                  className="flex flex-col gap-3 rounded-[1.5rem] border border-white/65 bg-white/80 p-4 shadow-sm transition-transform duration-300 hover:-translate-y-1 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div>
+                    <p className="text-base font-semibold text-foreground">
+                      {sale.cashier_name ?? sale.cashier_email ?? "Unknown cashier"}
+                    </p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Processed by cashier
+                    </p>
+                    <p className="mt-1 text-sm text-muted-foreground">
+                      Buyer: {sale.customer_name ?? "Walk-in customer"}
+                    </p>
+                    <p className="mt-2 text-xs font-medium uppercase tracking-[0.18em] text-primary/70">
+                      POS No. {sale.sale_number ?? sale.id}
+                      {sale.receipt_number != null ? ` | Receipt #${sale.receipt_number}` : ""}
+                    </p>
+                    <p className="mt-1 text-xs text-muted-foreground/80">
+                      {sale.branch ?? "Main Branch"} | {formatDate(sale.created_at)}
+                    </p>
                   </div>
-                ))}
-              </div>
+                  <div className="flex items-center gap-3">
+                    <span className="rounded-full bg-accent/20 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                      Synced
+                    </span>
+                    <p className="text-lg font-semibold text-primary">{formatCurrency(sale.total_amount, currency)}</p>
+                  </div>
+                </div>
+              ))
             )}
           </CardContent>
-        </Card>
+        </Card>}
 
-        <div className="space-y-6">
-          <Card className="border-border">
+        {showLowStock && <div className="grid gap-6">
+          <Card className="glass-panel rounded-[2rem] border-white/60">
             <CardHeader>
-              <CardTitle className="text-card-foreground">Low Stock Alert</CardTitle>
-              <CardDescription>Monitor inventory items nearing reorder thresholds.</CardDescription>
+              <CardDescription className="text-xs uppercase tracking-[0.24em] text-primary/60">
+                Inventory Watch
+              </CardDescription>
+              <CardTitle className="mt-2 text-3xl text-foreground">Low stock alert</CardTitle>
+              <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                Quickly spot which items need replenishment before they affect selling hours.
+              </p>
             </CardHeader>
-            <CardContent>
+            <CardContent className="space-y-3">
               {loading ? (
-                <div className="space-y-3">
-                  {Array.from({ length: 5 }).map((_, index) => (
-                    <div key={index} className="h-10 w-full rounded-md bg-muted" />
-                  ))}
-                </div>
+                Array.from({ length: 4 }).map((_, index) => (
+                  <div key={index} className="h-16 rounded-[1.25rem] bg-muted/80" />
+                ))
               ) : lowStock.length === 0 ? (
-                <p className="text-sm text-muted-foreground">Inventory levels look healthy. No low stock items.</p>
-              ) : (
-                <div className="space-y-4">
-                  {lowStock.map((item) => (
-                    <div key={item.id} className="flex items-center justify-between">
-                      <div>
-                        <p className="font-medium text-card-foreground">{item.name}</p>
-                        <p className="text-xs text-muted-foreground">Reorder level {item.reorder_level}</p>
-                      </div>
-                      <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-600">
-                        {item.stock_quantity} left
-                      </span>
-                    </div>
-                  ))}
+                <div className="rounded-[1.5rem] border border-dashed border-primary/20 bg-primary/5 p-5 text-sm text-muted-foreground">
+                  Inventory levels look healthy. No urgent stock items need action.
                 </div>
+              ) : (
+                lowStock.map((item) => (
+                  <div
+                    key={item.id}
+                    className="flex items-center justify-between rounded-[1.5rem] border border-white/65 bg-white/80 p-4"
+                  >
+                    <div className="min-w-0">
+                      <p className="truncate font-semibold text-foreground">{item.name}</p>
+                      <p className="mt-1 text-xs uppercase tracking-[0.18em] text-muted-foreground">
+                        Reorder level {item.reorder_level}
+                      </p>
+                    </div>
+                    <span className="rounded-full bg-rose-100 px-3 py-1 text-xs font-semibold text-rose-600">
+                      {item.stock_quantity} left
+                    </span>
+                  </div>
+                ))
               )}
             </CardContent>
           </Card>
+        </div>}
+        </motion.div>
+      )}
 
-          <AddMemberCard />
-        </div>
-      </div>
-
-      <Card className="border-border">
-        <CardHeader>
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <CardTitle className="text-card-foreground">Sales Analytics</CardTitle>
-              <CardDescription>Interactive trends for the last 30 days, 8 weeks, and 6 months.</CardDescription>
+      {showAnalytics && <motion.div variants={itemVariants}>
+        <Card className="glass-panel rounded-[2rem] border-white/60">
+          <CardHeader>
+            <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+              <div>
+                <CardDescription className="text-xs uppercase tracking-[0.24em] text-primary/60">
+                  Sales Analytics
+                </CardDescription>
+                <CardTitle className="mt-2 text-3xl text-foreground">Revenue trend explorer</CardTitle>
+                <p className="mt-2 text-sm leading-6 text-muted-foreground">
+                  Toggle between daily, weekly, and monthly views to understand momentum with less noise.
+                </p>
+              </div>
+              <Tabs
+                defaultValue="daily"
+                onValueChange={(value) => setSalesView(value as "daily" | "weekly" | "monthly")}
+                className="w-full sm:w-[220px]"
+              >
+                <TabsList className="grid w-full grid-cols-3 rounded-full bg-primary/10 p-1">
+                  <TabsTrigger value="daily" className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                    Daily
+                  </TabsTrigger>
+                  <TabsTrigger value="weekly" className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                    Weekly
+                  </TabsTrigger>
+                  <TabsTrigger value="monthly" className="rounded-full data-[state=active]:bg-white data-[state=active]:shadow-sm">
+                    Monthly
+                  </TabsTrigger>
+                </TabsList>
+              </Tabs>
             </div>
-            <Tabs defaultValue="daily" onValueChange={setSalesView} className="w-[180px]">
-              <TabsList className="grid w-full grid-cols-3">
-                <TabsTrigger value="daily">Daily</TabsTrigger>
-                <TabsTrigger value="weekly">Weekly</TabsTrigger>
-                <TabsTrigger value="monthly">Monthly</TabsTrigger>
-              </TabsList>
-            </Tabs>
-          </div>
-        </CardHeader>
-        <CardContent className="min-h-[320px]">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={salesView}
-              initial={{ opacity: 0, y: 20 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.25, ease: "easeOut" }}
-            >
-              {currentData.length === 0 ? (
-                <div className="flex h-[280px] items-center justify-center rounded-lg border border-dashed border-border bg-muted/20 text-sm text-muted-foreground">
-                  No data available for this timeframe.
-                </div>
-              ) : (
-                <div className="h-[320px] w-full">
-                  <ResponsiveContainer width="100%" height="100%">
-                    {salesView === "daily" && (
-                      <LineChart data={currentData} margin={{ top: 20, right: 24, left: 0, bottom: 8 }}>
-                        <defs>
-                          <linearGradient id={gradientId("daily" )} x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#198754" stopOpacity={0.5} />
-                            <stop offset="95%" stopColor="#198754" stopOpacity={0.05} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="4 8" stroke="#E5F3ED" />
-                        <XAxis dataKey="date" tickLine={false} axisLine={false} stroke="#0F5132" />
-                        <YAxis hide tickCount={6} />
-                        <Tooltip content={<SalesTooltip />} />
-                        <Line type="monotone" dataKey="total" stroke="#198754" strokeWidth={2.5} dot={false} />
-                        <Area
-                          type="monotone"
-                          dataKey="total"
-                          stroke="none"
-                          fill={`url(#${gradientId("daily")})`}
-                        />
-                      </LineChart>
-                    )}
-                    {salesView === "weekly" && (
-                      <BarChart data={currentData} margin={{ top: 20, right: 24, left: 0, bottom: 8 }}>
-                        <CartesianGrid strokeDasharray="4 8" stroke="#E5F3ED" />
-                        <XAxis dataKey="week" tickLine={false} axisLine={false} stroke="#0F5132" />
-                        <YAxis hide />
-                        <Tooltip content={<SalesTooltip />} />
-                        <Bar dataKey="total" radius={[8, 8, 0, 0]} fill="#198754" />
-                      </BarChart>
-                    )}
-                    {salesView === "monthly" && (
-                      <AreaChart data={currentData} margin={{ top: 20, right: 24, left: 0, bottom: 8 }}>
-                        <defs>
-                          <linearGradient id={gradientId("monthly")} x1="0" y1="0" x2="0" y2="1">
-                            <stop offset="5%" stopColor="#146C43" stopOpacity={0.45} />
-                            <stop offset="95%" stopColor="#146C43" stopOpacity={0.05} />
-                          </linearGradient>
-                        </defs>
-                        <CartesianGrid strokeDasharray="4 8" stroke="#E5F3ED" />
-                        <XAxis dataKey="month" tickLine={false} axisLine={false} stroke="#0F5132" />
-                        <YAxis hide />
-                        <Tooltip content={<SalesTooltip />} />
-                        <Area type="monotone" dataKey="total" stroke="#146C43" strokeWidth={2} fill={`url(#${gradientId("monthly")})`} />
-                      </AreaChart>
-                    )}
-                  </ResponsiveContainer>
-                </div>
-              )}
-            </motion.div>
-          </AnimatePresence>
-        </CardContent>
-      </Card>
-    </div>
+          </CardHeader>
+          <CardContent className="min-h-[340px]">
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={salesView}
+                initial={{ opacity: 0, y: 18 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -12 }}
+                transition={{ duration: 0.28, ease: "easeOut" }}
+              >
+                {currentData.length === 0 ? (
+                  <div className="flex h-[280px] items-center justify-center rounded-[1.75rem] border border-dashed border-primary/20 bg-primary/5 text-sm text-muted-foreground">
+                    No data available for this timeframe.
+                  </div>
+                ) : (
+                  <div className="rounded-[1.75rem] border border-white/60 bg-white/55 p-4 sm:p-6">
+                    <div className="mb-4 flex flex-wrap items-center gap-3">
+                      <div className="rounded-full bg-primary/10 px-3 py-1 text-xs font-semibold uppercase tracking-[0.18em] text-primary">
+                        {salesView} range
+                      </div>
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Boxes className="h-4 w-4 text-primary" />
+                        Interactive performance tracking
+                      </div>
+                    </div>
+                    <div className="h-[320px] w-full" aria-label={`Sales analytics chart for ${salesView} view`} role="img">
+                      <ResponsiveContainer width="100%" height="100%">
+                        {salesView === "weekly" ? (
+                          <BarChart data={currentData} margin={{ top: 16, right: 12, left: -12, bottom: 4 }}>
+                            <CartesianGrid strokeDasharray="4 10" stroke="#d8e7de" vertical={false} />
+                            <XAxis dataKey="week" tickLine={false} axisLine={false} stroke="#5d7764" />
+                            <YAxis hide />
+                            <Tooltip content={<SalesTooltip />} />
+                            <Bar dataKey="total" radius={[12, 12, 4, 4]} fill="#1d7a54" />
+                          </BarChart>
+                        ) : salesView === "monthly" ? (
+                          <AreaChart data={currentData} margin={{ top: 16, right: 12, left: -12, bottom: 4 }}>
+                            <defs>
+                              <linearGradient id={gradientId("monthly")} x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#17563c" stopOpacity={0.38} />
+                                <stop offset="100%" stopColor="#17563c" stopOpacity={0.04} />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="4 10" stroke="#d8e7de" vertical={false} />
+                            <XAxis dataKey="month" tickLine={false} axisLine={false} stroke="#5d7764" />
+                            <YAxis hide />
+                            <Tooltip content={<SalesTooltip />} />
+                            <Area type="monotone" dataKey="total" stroke="#17563c" strokeWidth={3} fill={`url(#${gradientId("monthly")})`} />
+                          </AreaChart>
+                        ) : (
+                          <LineChart data={currentData} margin={{ top: 16, right: 12, left: -12, bottom: 4 }}>
+                            <defs>
+                              <linearGradient id={gradientId("daily")} x1="0" y1="0" x2="0" y2="1">
+                                <stop offset="0%" stopColor="#1d7a54" stopOpacity={0.42} />
+                                <stop offset="100%" stopColor="#1d7a54" stopOpacity={0.03} />
+                              </linearGradient>
+                            </defs>
+                            <CartesianGrid strokeDasharray="4 10" stroke="#d8e7de" vertical={false} />
+                            <XAxis dataKey="date" tickLine={false} axisLine={false} stroke="#5d7764" />
+                            <YAxis hide tickCount={6} />
+                            <Tooltip content={<SalesTooltip />} />
+                            <Line type="monotone" dataKey="total" stroke="#1d7a54" strokeWidth={3} dot={false} />
+                            <Area type="monotone" dataKey="total" stroke="none" fill={`url(#${gradientId("daily")})`} />
+                          </LineChart>
+                        )}
+                      </ResponsiveContainer>
+                    </div>
+                  </div>
+                )}
+              </motion.div>
+            </AnimatePresence>
+          </CardContent>
+        </Card>
+      </motion.div>}
+    </motion.div>
   );
 }
 
@@ -239,179 +492,13 @@ const SalesTooltip = ({ active, payload, label }: TooltipProps<string, string>) 
   });
 
   return (
-    <div className="min-w-[160px] rounded-lg border border-emerald-200 bg-white/95 p-3 text-sm shadow-lg">
-      <p className="font-medium text-emerald-900">{label}</p>
-      <p className="mt-1 text-xs text-muted-foreground">Total</p>
-      <p className="text-lg font-semibold text-emerald-700">{formatter.format(payload[0].value as number)}</p>
+    <div className="min-w-[180px] rounded-[1.25rem] border border-white/70 bg-white/95 p-4 text-sm shadow-[0_18px_40px_rgba(26,46,34,0.14)] backdrop-blur">
+      <p className="text-xs uppercase tracking-[0.18em] text-primary/60">{label}</p>
+      <p className="mt-2 text-sm text-muted-foreground">Total recorded sales</p>
+      <p className="mt-1 text-xl font-semibold text-primary">{formatter.format(payload[0].value as unknown as number)}</p>
     </div>
   );
 };
 
 export default DashboardPage;
-
-const addMemberSchema = z.object({
-  name: z
-    .string()
-    .trim()
-    .min(2, "Member name must be at least 2 characters long."),
-  code: z
-    .string()
-    .trim()
-    .min(3, "Member code must be at least 3 characters.")
-    .regex(/^[A-Za-z0-9-]+$/, "Use only letters, numbers, or dashes."),
-  email: z
-    .string()
-    .trim()
-    .email("Enter a valid email address.")
-    .optional()
-    .or(z.literal("")),
-});
-
-type AddMemberValues = z.infer<typeof addMemberSchema>;
-
-const defaultValues: AddMemberValues = {
-  name: "",
-  code: "",
-  email: "",
-};
-
-function AddMemberCard() {
-  const [open, setOpen] = useState(false);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const form = useForm<AddMemberValues>({
-    resolver: zodResolver(addMemberSchema),
-    defaultValues,
-  });
-
-  const handleOpenChange = (nextOpen: boolean) => {
-    setOpen(nextOpen);
-    if (!nextOpen) {
-      form.reset(defaultValues);
-    }
-  };
-
-  const onSubmit = async (values: AddMemberValues) => {
-    if (!isSupabaseConfigured) {
-      toast.info("Connect Supabase to enable member enrollment.");
-      return;
-    }
-
-    const payload = {
-      name: values.name.trim(),
-      code: values.code.trim().toUpperCase(),
-      email: values.email?.trim() ? values.email.trim() : null,
-    };
-
-    setIsSubmitting(true);
-    try {
-      const { error } = await (supabase as any).from("members").insert(payload);
-      if (error) {
-        throw error;
-      }
-      toast.success("Member added successfully.");
-      form.reset(defaultValues);
-      setOpen(false);
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "Failed to add member.";
-      toast.error(message);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  return (
-    <>
-      <Card className="border-border">
-        <CardHeader className="flex flex-row items-start justify-between gap-3">
-          <div className="space-y-1">
-            <CardTitle className="flex items-center gap-2 text-card-foreground">
-              <UserPlus className="h-5 w-5 text-primary" />
-              Member Enrollment
-            </CardTitle>
-            <CardDescription>
-              Register members so cashiers can apply loyalty discounts at the point of sale.
-            </CardDescription>
-          </div>
-          <Button onClick={() => setOpen(true)} disabled={!isSupabaseConfigured}>
-            Add Member
-          </Button>
-        </CardHeader>
-        <CardContent className="text-sm text-muted-foreground">
-          {isSupabaseConfigured ? (
-            <p>Use this tool to issue new membership codes and manage loyalty perks.</p>
-          ) : (
-            <p>Supabase connection is required before new members can be added from the dashboard.</p>
-          )}
-        </CardContent>
-      </Card>
-
-      <Dialog open={open} onOpenChange={handleOpenChange}>
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>New Member</DialogTitle>
-            <DialogDescription>Fill out the details below to enroll a member in the loyalty program.</DialogDescription>
-          </DialogHeader>
-          <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
-            <div className="grid gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="member-name">Member Name</Label>
-                <Input
-                  id="member-name"
-                  placeholder="e.g. Alex Rivera"
-                  autoComplete="name"
-                  {...form.register("name")}
-                />
-                {form.formState.errors.name && (
-                  <p className="text-sm text-rose-600">{form.formState.errors.name.message}</p>
-                )}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="member-code">Member Code</Label>
-                <Input
-                  id="member-code"
-                  placeholder="e.g. MEM-123"
-                  autoComplete="off"
-                  {...form.register("code")}
-                />
-                {form.formState.errors.code && (
-                  <p className="text-sm text-rose-600">{form.formState.errors.code.message}</p>
-                )}
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="member-email">Email (optional)</Label>
-                <Input
-                  id="member-email"
-                  type="email"
-                  placeholder="name@example.com"
-                  autoComplete="email"
-                  {...form.register("email")}
-                />
-                {form.formState.errors.email && (
-                  <p className="text-sm text-rose-600">{form.formState.errors.email.message}</p>
-                )}
-              </div>
-            </div>
-            <DialogFooter className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => handleOpenChange(false)}
-                disabled={isSubmitting}
-              >
-                Cancel
-              </Button>
-              <Button type="submit" disabled={isSubmitting || !isSupabaseConfigured}>
-                {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Save Member
-              </Button>
-            </DialogFooter>
-          </form>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
-
 

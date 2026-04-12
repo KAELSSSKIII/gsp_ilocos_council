@@ -1,7 +1,7 @@
 import { useMemo } from "react";
 import { DollarSign, ShoppingCart, PackageSearch, Users } from "lucide-react";
-import { useSupabaseQuery } from "@/hooks/useSupabaseQuery";
-import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
+import { useQuery } from "@tanstack/react-query";
+import api from "@/lib/api";
 import { formatCurrency } from "@/utils/format";
 
 type Metric = {
@@ -14,9 +14,16 @@ type Metric = {
 
 type SalesRecord = {
   id: string;
+  sale_number?: string | null;
+  receipt_number?: number | null;
   branch: string | null;
   created_at: string;
   total_amount: number;
+  member_id?: string | null;
+  cashier_id?: string | null;
+  cashier_name?: string | null;
+  cashier_email?: string | null;
+  customer_name?: string | null;
 };
 
 type InventoryRecord = {
@@ -82,15 +89,25 @@ const demoData: DashboardData = {
   recentSales: [
     {
       id: "demo-1",
+      sale_number: "POS-2025-0001",
+      receipt_number: 1045,
       branch: "Main Branch",
       created_at: "Nov 8, 2025",
       total_amount: 1957.76,
+      cashier_name: "Admin User",
+      cashier_email: "admin@gsp.local",
+      customer_name: "Maria Santos",
     },
     {
       id: "demo-2",
+      sale_number: "POS-2025-0002",
+      receipt_number: 1046,
       branch: "Downtown",
       created_at: "Nov 7, 2025",
       total_amount: 672,
+      cashier_name: "Cashier One",
+      cashier_email: "cashier@gsp.local",
+      customer_name: "Walk-in customer",
     },
   ],
   lowStock: [
@@ -119,43 +136,46 @@ const demoData: DashboardData = {
 };
 
 const fetchDashboardData = async (): Promise<DashboardData> => {
-  if (!isSupabaseConfigured) {
-    return demoData;
-  }
-
   const end = new Date();
-  const startForSales = new Date();
-  startForSales.setMonth(startForSales.getMonth() - 6);
 
-  const [{ data: salesData, error: salesError }, { data: productsData, error: productsError }, { data: teamData, error: teamError }] =
-    await Promise.all([
-      supabase
-        .from("sales")
-        .select("id,total_amount,created_at,branch,status")
-        .gte("created_at", startForSales.toISOString())
-        .neq("status", "voided")
-        .order("created_at", { ascending: false }),
-      supabase.from("products").select("id,name,stock_quantity,reorder_level"),
-      supabase.from("profiles").select("id"),
-    ]);
+  const { sales: salesData, products: productsData, teamCount } =
+    await api.get<{
+      sales: {
+        id: string;
+        sale_number?: string | null;
+        receipt_number?: number | null;
+        total_amount: number;
+        created_at: string;
+        branch: string | null;
+        status: string;
+        member_id?: string | null;
+        cashier_id?: string | null;
+        cashier_name?: string | null;
+        cashier_email?: string | null;
+        customer_name?: string | null;
+      }[];
+      products: { id: string; name: string; stock_quantity: number; reorder_level: number }[];
+      teamCount: number;
+    }>("/dashboard");
 
-  if (salesError) throw salesError;
-  if (productsError) throw productsError;
-  if (teamError) throw teamError;
-
-  const sales = (salesData ?? [])
-    .filter((sale) => sale.status !== "voided")
-    .map((sale) => ({
+  const sales = (salesData ?? []).map((sale) => ({
     id: sale.id,
+    sale_number: sale.sale_number ?? null,
+    receipt_number: sale.receipt_number ?? null,
     branch: sale.branch,
     created_at: sale.created_at,
     total_amount: Number(sale.total_amount ?? 0),
+    member_id: sale.member_id ?? null,
+    cashier_id: sale.cashier_id ?? null,
+    cashier_name: sale.cashier_name ?? null,
+    cashier_email: sale.cashier_email ?? null,
+    customer_name: sale.customer_name ?? null,
   }));
 
   const products = productsData ?? [];
-  const teamMembers = teamData?.length ?? 0;
+  const teamMembers = teamCount ?? 0;
 
-  const recentSales = sales.slice(0, 8).map((sale) => ({
+  const recentSales = sales.map((sale) => ({
     ...sale,
     created_at: formatDateLabel(sale.created_at),
   }));
@@ -169,20 +189,41 @@ const fetchDashboardData = async (): Promise<DashboardData> => {
   const sales30dTotal = sales30d.reduce((sum, sale) => sum + sale.total_amount, 0);
   const sales30dCount = sales30d.length;
 
+  // Prev 30d for MoM comparison
+  const now = new Date();
+  const thirtyDaysAgo = new Date(now.getTime() - 30 * 86400000);
+  const sixtyDaysAgo  = new Date(now.getTime() - 60 * 86400000);
+  const prev30d = sales.filter(s => {
+    const d = new Date(s.created_at);
+    return d >= sixtyDaysAgo && d < thirtyDaysAgo;
+  });
+  const prev30dTotal = prev30d.reduce((s, r) => s + r.total_amount, 0);
+  const prev30dCount = prev30d.length;
+  const salesChangePct = prev30dTotal > 0
+    ? ((sales30dTotal - prev30dTotal) / prev30dTotal) * 100
+    : null;
+  const txnChangePct = prev30dCount > 0
+    ? ((sales30dCount - prev30dCount) / prev30dCount) * 100
+    : null;
+
   const activeSkus = products.filter((product) => (product.stock_quantity ?? 0) > 0).length;
 
   const metrics: Metric[] = [
     {
       title: "Sales (30d)",
       value: formatCurrency(sales30dTotal, CURRENCY),
-      change: "Live data",
+      change: salesChangePct !== null
+        ? `${salesChangePct >= 0 ? "+" : ""}${salesChangePct.toFixed(1)}% vs prev 30d`
+        : "No prior data",
       icon: DollarSign,
       color: "text-emerald-600",
     },
     {
       title: "Transactions",
       value: `${sales30dCount}`,
-      change: "Last 30 days",
+      change: txnChangePct !== null
+        ? `${txnChangePct >= 0 ? "+" : ""}${txnChangePct.toFixed(1)}% vs prev 30d`
+        : "No prior data",
       icon: ShoppingCart,
       color: "text-emerald-600",
     },
@@ -196,7 +237,7 @@ const fetchDashboardData = async (): Promise<DashboardData> => {
     {
       title: "Team Members",
       value: `${teamMembers}`,
-      change: "Supabase Auth",
+      change: "Active users",
       icon: Users,
       color: "text-emerald-600",
     },
@@ -214,16 +255,14 @@ const fetchDashboardData = async (): Promise<DashboardData> => {
 };
 
 export function useDashboardData() {
-  const { data, isLoading } = useSupabaseQuery(["dashboard", "summary"], fetchDashboardData, {
-    enabled: isSupabaseConfigured,
+  const { data, isLoading } = useQuery({
+    queryKey: ["dashboard", "summary"],
+    queryFn: fetchDashboardData,
+    staleTime: 1000 * 60 * 2,
+    refetchOnWindowFocus: false,
   });
 
-  const payload = useMemo(() => {
-    if (!isSupabaseConfigured) {
-      return demoData;
-    }
-    return data ?? demoData;
-  }, [data]);
+  const payload = useMemo(() => data ?? demoData, [data]);
 
   return {
     metrics: payload.metrics,
@@ -231,7 +270,7 @@ export function useDashboardData() {
     lowStock: payload.lowStock,
     currency: payload.currency,
     salesAnalytics: payload.salesAnalytics,
-    loading: isLoading && isSupabaseConfigured,
+    loading: isLoading,
   };
 }
 

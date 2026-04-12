@@ -1,0 +1,34 @@
+# ── Stage 1: Compile TypeScript ──────────────────────────────────────────────
+FROM node:20-alpine AS builder
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --ignore-scripts
+
+COPY . .
+
+# Compiles server/*.ts → dist/server/ (via tsconfig.server.json)
+RUN npm run build:server
+
+# ── Stage 2: Production runtime (no devDependencies) ─────────────────────────
+FROM node:20-alpine AS runner
+
+WORKDIR /app
+
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev --ignore-scripts
+
+COPY --from=builder /app/dist/server ./dist/server
+
+# The repo root package.json is ESM for Vite, while the server build emits CommonJS.
+# Add a local package boundary so Node runs the compiled backend correctly.
+RUN printf '{"type":"commonjs"}\n' > ./dist/server/package.json
+
+# Run as non-root user
+RUN addgroup -S gsp && adduser -S gsp -G gsp
+USER gsp
+
+EXPOSE 3001
+
+CMD ["node", "dist/server/index.js"]

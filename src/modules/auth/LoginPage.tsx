@@ -1,260 +1,310 @@
-import { FormEvent, useState } from "react";
-import { useNavigate, useLocation, Navigate } from "react-router-dom";
+import { CSSProperties, FormEvent, useState } from "react";
+import { Navigate, useLocation, useNavigate } from "react-router-dom";
 import { motion } from "framer-motion";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
-import { Button } from "@/components/ui/button";
-import { Label } from "@/components/ui/label";
-import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Checkbox } from "@/components/ui/checkbox";
-import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
-import { useSessionStore, selectProfile, selectLoading } from "@/store/sessionStore";
-import { Loader2, ShieldCheck, Eye, EyeOff, Sparkles } from "lucide-react";
+import {
+  AlertCircle,
+  ArrowRight,
+  Check,
+  Eye,
+  EyeOff,
+  Lock,
+  User,
+  Loader2,
+} from "lucide-react";
+import { authApi } from "@/lib/api";
+import { selectLoading, selectProfile, useSessionStore } from "@/store/sessionStore";
+import { appendAuditEntry } from "@/utils/auditTrail";
+
+const styles = {
+  page: {
+    position: "relative",
+    minHeight: "100vh",
+    overflow: "hidden",
+    background:
+      "radial-gradient(ellipse 80% 60% at 20% 50%, rgba(45,107,64,.35) 0%, transparent 60%), radial-gradient(ellipse 50% 80% at 80% 20%, rgba(11,30,18,.8) 0%, transparent 50%), radial-gradient(ellipse 40% 40% at 60% 80%, rgba(36,85,52,.2) 0%, transparent 50%), #112918",
+    color: "#fff",
+  } satisfies CSSProperties,
+  pattern: {
+    position: "absolute",
+    inset: 0,
+    backgroundImage:
+      "url(\"data:image/svg+xml,%3Csvg%20width='60'%20height='60'%20viewBox='0%200%2060%2060'%20xmlns='http://www.w3.org/2000/svg'%3E%3Cg%20fill='none'%20fill-rule='evenodd'%3E%3Cg%20fill='%23ffffff'%20fill-opacity='0.018'%3E%3Cpath%20d='M36%2034v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zm0-30V0h-2v4h-4v2h4v4h2V6h4V4h-4zM6%2034v-4H4v4H0v2h4v4h2v-4h4v-2H6zM6%204V0H4v4H0v2h4v4h2V6h4V4H6z'/%3E%3C/g%3E%3C/g%3E%3C/svg%3E\")",
+    pointerEvents: "none",
+  } satisfies CSSProperties,
+  shell: {
+    position: "relative",
+    zIndex: 1,
+    minHeight: "100vh",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "32px 16px",
+  } satisfies CSSProperties,
+  wrap: {
+    width: "100%",
+    maxWidth: "440px",
+  } satisfies CSSProperties,
+  logoRow: {
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "12px",
+    marginBottom: "32px",
+  } satisfies CSSProperties,
+  logoMark: {
+    width: "40px",
+    height: "40px",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    borderRadius: "10px",
+    border: "1px solid rgba(255,255,255,.2)",
+    background: "rgba(255,255,255,.06)",
+  } satisfies CSSProperties,
+  card: {
+    position: "relative",
+    overflow: "hidden",
+    borderRadius: "22px",
+    border: "1px solid rgba(255,255,255,.12)",
+    background: "rgba(255,255,255,.05)",
+    backdropFilter: "blur(20px)",
+    WebkitBackdropFilter: "blur(20px)",
+    padding: "36px 36px 28px",
+    boxShadow: "0 24px 60px rgba(0,0,0,.22)",
+  } satisfies CSSProperties,
+  cardTopLine: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    height: "1px",
+    background: "linear-gradient(to right, transparent, rgba(255,255,255,.3), transparent)",
+  } satisfies CSSProperties,
+  input: {
+    width: "100%",
+    height: "45px",
+    borderRadius: "11px",
+    border: "1px solid rgba(255,255,255,.12)",
+    background: "rgba(255,255,255,.07)",
+    color: "#fff",
+    outline: "none",
+    fontSize: "13px",
+    padding: "12px 14px 12px 40px",
+  } satisfies CSSProperties,
+  primaryButton: {
+    position: "relative",
+    width: "100%",
+    height: "50px",
+    borderRadius: "11px",
+    border: "1px solid rgba(255,255,255,.15)",
+    background: "linear-gradient(135deg, #245534 0%, #1D4429 100%)",
+    color: "#fff",
+    fontSize: "13px",
+    fontWeight: 500,
+    letterSpacing: ".04em",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    gap: "9px",
+    boxShadow: "0 8px 24px rgba(0,0,0,.18)",
+  } satisfies CSSProperties,
+} as const;
 
 export function LoginPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const profile = useSessionStore(selectProfile);
   const loadingProfile = useSessionStore(selectLoading);
-  const fetchProfile = useSessionStore((state) => state.fetchProfile);
+  const fetchProfile = useSessionStore((s) => s.fetchProfile);
 
-  const [email, setEmail] = useState("");
+  const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [showPassword, setShowPassword] = useState(false);
-  const [trustedDevice, setTrustedDevice] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
 
   const from = (location.state as { from?: string } | undefined)?.from ?? "/";
 
-  if (!isSupabaseConfigured) {
-    return (
-      <div className="flex min-h-[70vh] items-center justify-center">
-        <Card className="max-w-md w-full border-border">
-          <CardHeader>
-            <CardTitle className="text-2xl text-card-foreground">Supabase Not Configured</CardTitle>
-            <CardDescription>
-              Provide <code>VITE_SUPABASE_URL</code> and <code>VITE_SUPABASE_PUBLISHABLE_KEY</code> in your
-              <code>.env.local</code> file to enable authentication.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="text-sm text-muted-foreground space-y-2">
-            <p>The application is running in demo mode. All routes are accessible without signing in.</p>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  if (!loadingProfile && profile) return <Navigate to={from} replace />;
 
-  if (!loadingProfile && profile) {
-    return <Navigate to={from} replace />;
-  }
+  const handleSubmit = async (e?: FormEvent<HTMLFormElement>) => {
+    e?.preventDefault();
 
-  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
+    if (!username.trim() || !password) {
+      setError("Please fill in all fields.");
+      return;
+    }
+
     setError(null);
     setSubmitting(true);
 
     try {
-      const { error: signInError } = await supabase.auth.signInWithPassword({
-        email,
-        password,
-      });
-
-      if (signInError) {
-        throw signInError;
-      }
-
+      await authApi.login(username.trim(), password);
       await fetchProfile();
-      if (trustedDevice) {
-        localStorage.setItem("gs-trusted-device", "1");
-      } else {
-        localStorage.removeItem("gs-trusted-device");
+      const currentProfile = useSessionStore.getState().profile;
+      if (currentProfile) {
+        appendAuditEntry({
+          action: "login",
+          actorName: currentProfile.full_name || currentProfile.username,
+          actorEmail: currentProfile.username,
+          actorRole: currentProfile.role,
+          summary: "Signed in to the workspace.",
+        });
       }
-      navigate(from, { replace: true });
+      setSignedIn(true);
+      window.setTimeout(() => {
+        navigate(from, { replace: true });
+      }, 700);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Unable to sign in. Please try again.";
-      setError(message);
+      const status = (err as { status?: number }).status;
+      if (status === 500 || status === 502 || status === 503) {
+        setError("Server is unavailable. Make sure the backend server is running and try again.");
+      } else {
+        setError(err instanceof Error ? err.message : "Incorrect username or password. Please try again.");
+      }
+      setPassword("");
     } finally {
       setSubmitting(false);
     }
   };
 
   return (
-    <div className="relative min-h-screen w-full overflow-hidden bg-[#0F5132]">
-      <div className="absolute inset-0 bg-gradient-to-br from-[#0F5132] via-[#146C43] to-[#198754]" />
-      <div className="absolute -left-24 top-32 h-96 w-96 rounded-full bg-white/10 blur-3xl" />
-      <div className="absolute right-[-15%] bottom-[-10%] h-[26rem] w-[26rem] rounded-full bg-emerald-300/20 blur-3xl" />
-      <div className="absolute left-1/2 top-0 hidden h-72 w-72 -translate-x-1/2 rounded-full bg-emerald-200/10 blur-3xl lg:block" />
+    <div style={styles.page}>
+      <div style={styles.pattern} />
 
-      <div className="relative flex min-h-screen w-full flex-col lg:flex-row">
-        <section className="hidden w-full flex-col justify-between px-12 py-16 text-emerald-50 lg:flex lg:w-[55%]">
-          <motion.div
-            initial={{ opacity: 0, y: 30 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.8, ease: "easeOut" }}
-            className="space-y-12"
-          >
-            <div className="flex items-center gap-3 text-emerald-50/90">
-              <div className="flex h-12 w-12 items-center justify-center rounded-full border border-white/20 bg-white/10 shadow-lg">
-                <ShieldCheck className="h-6 w-6" />
-              </div>
-              <div>
-                <p className="text-lg font-semibold tracking-wide">Girl Scout Unified Business Suite</p>
-                <p className="text-sm text-emerald-100/70">Secure portal for sales, accounting, and troop operations.</p>
-              </div>
+      <motion.div
+        initial={{ opacity: 0, y: 18 }}
+        animate={{ opacity: 1, y: 0 }}
+        transition={{ duration: 0.45, ease: "easeOut" }}
+        style={styles.shell}
+      >
+        <div style={styles.wrap}>
+          <div style={styles.logoRow}>
+            <div style={styles.logoMark}>
+              <img src="/favicon.ico" alt="Girl Scout Suite logo" className="h-6 w-6 object-contain" />
             </div>
-
-            <div className="space-y-6">
-              <h1 className="text-4xl font-bold leading-snug text-white">
-                Empower your council with real-time visibility across POS, inventory, and finance.
-              </h1>
-              <motion.ul
-                className="space-y-4 text-base text-emerald-50/80"
-                initial="hidden"
-                animate="visible"
-                variants={{ hidden: {}, visible: { transition: { staggerChildren: 0.12 } } }}
-              >
-                {[
-                  "Role-based access for Admin, Accountant, Cashier, HR, and Inventory Clerk.",
-                  "Encrypted authentication, automatic session refresh, and device trust indicators.",
-                  "Direct integration with Supabase storage, RLS policies, and audit trail logging.",
-                ].map((item) => (
-                  <motion.li key={item} variants={{ hidden: { opacity: 0, y: 12 }, visible: { opacity: 1, y: 0 } }}>
-                    • {item}
-                  </motion.li>
-                ))}
-              </motion.ul>
-
-              <motion.div
-                initial={{ opacity: 0, y: 25 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.6, duration: 0.6 }}
-                className="inline-flex items-center gap-3 rounded-2xl border border-white/20 bg-white/10 px-5 py-3 text-sm text-emerald-50 backdrop-blur-xl shadow-lg"
-              >
-                <Sparkles className="h-5 w-5 text-emerald-100" />
-                <div className="leading-tight">
-                  Trusted by councils for unified sales, payroll, and troop operations.
-                </div>
-              </motion.div>
+            <div className="flex flex-col">
+              <span className="text-[9px] uppercase tracking-[0.12em] text-[#8DB89E]">Ilocos Sur Council</span>
+              <span className="text-sm font-medium text-white">Girl Scout Suite</span>
             </div>
-          </motion.div>
+          </div>
 
-          <p className="text-xs text-emerald-100/60">© {new Date().getFullYear()} Girl Scout Council. Internal use only.</p>
-        </section>
+          <div style={{ ...styles.card, ...(signedIn ? { pointerEvents: "none" } : null) }}>
+            <div style={styles.cardTopLine} />
 
-        <section className="flex w-full flex-1 items-center justify-center px-6 py-12 sm:px-10">
-          <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: 1, y: 0 }}
-            transition={{ duration: 0.5, ease: "easeOut" }}
-            className="w-full max-w-md"
-          >
-            <Card className="w-full border-white/20 bg-white/80 shadow-[0_25px_70px_-30px_rgba(9,63,40,0.65)] backdrop-blur-xl">
-              <CardHeader className="space-y-6">
-                <div className="flex items-center gap-4">
-                  <span className="flex h-12 w-12 items-center justify-center rounded-full bg-gradient-to-br from-[#0F5132] to-[#198754] text-white shadow-lg">
-                    <ShieldCheck className="h-6 w-6" />
-                  </span>
-                  <div>
-                    <CardTitle className="text-3xl font-semibold text-card-foreground">Welcome back</CardTitle>
-                    <CardDescription className="text-sm text-muted-foreground">
-                      Secure access for Girl Scout councils. Sign in with your council-issued credentials.
-                    </CardDescription>
+            {!signedIn ? (
+              <>
+                <div className="mb-7 text-center">
+                  <div className="mb-3 flex items-center justify-center gap-2 text-[10px] font-medium uppercase tracking-[0.12em] text-[#C9A84C]">
+                    <span className="h-px w-4 bg-[#C9A84C]/60" />
+                    Workspace access
+                    <span className="h-px w-4 bg-[#C9A84C]/60" />
                   </div>
+                  <h2 className="font-['DM_Serif_Display'] text-[26px] leading-tight text-white">Welcome back</h2>
                 </div>
-              </CardHeader>
-              <CardContent>
+
                 {error && (
-                  <Alert variant="destructive" className="mb-4">
-                    <AlertTitle>Authentication failed</AlertTitle>
-                    <AlertDescription>{error}</AlertDescription>
-                  </Alert>
+                  <div className="mb-4 flex items-center gap-2 rounded-[9px] border border-[#D64545]/25 bg-[#D64545]/10 px-3 py-[9px] text-xs text-[#F9B5B5]">
+                    <AlertCircle className="h-[13px] w-[13px] flex-shrink-0" />
+                    <span>{error}</span>
+                  </div>
                 )}
 
-                <form className="space-y-6" onSubmit={handleSubmit}>
-                  <div className="space-y-2">
-                    <Label htmlFor="email" className="text-sm font-medium text-card-foreground">
-                      Work Email
-                    </Label>
-                    <Input
-                      id="email"
-                      type="email"
-                      autoComplete="email"
-                      required
-                      value={email}
-                      onChange={(event) => setEmail(event.target.value)}
-                      placeholder="you@council.org"
-                      className="h-11 border-white/50 bg-white/70 focus-visible:border-emerald-400 focus-visible:ring-emerald-400"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="password" className="text-sm font-medium text-card-foreground">
-                      Password
-                    </Label>
+                <form onSubmit={handleSubmit}>
+                  <div className="mb-4">
+                    <label className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.1em] text-white/40">
+                      Username
+                    </label>
                     <div className="relative">
-                      <Input
-                        id="password"
+                      <User className="pointer-events-none absolute left-3 top-1/2 h-[15px] w-[15px] -translate-y-1/2 text-white/30" />
+                      <input
+                        type="text"
+                        autoComplete="username"
+                        placeholder="your username"
+                        value={username}
+                        onChange={(e) => setUsername(e.target.value)}
+                        className="placeholder:text-white/25"
+                        style={styles.input}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="mb-4">
+                    <label className="mb-2 block text-[10px] font-semibold uppercase tracking-[0.1em] text-white/40">
+                      Password
+                    </label>
+                    <div className="relative">
+                      <Lock className="pointer-events-none absolute left-3 top-1/2 h-[15px] w-[15px] -translate-y-1/2 text-white/30" />
+                      <input
                         type={showPassword ? "text" : "password"}
                         autoComplete="current-password"
-                        required
+                        placeholder="Enter your password"
                         value={password}
-                        onChange={(event) => setPassword(event.target.value)}
-                        placeholder="••••••••"
-                        className="h-11 border-white/50 bg-white/70 pr-11 focus-visible:border-emerald-400 focus-visible:ring-emerald-400"
+                        onChange={(e) => setPassword(e.target.value)}
+                        className="placeholder:text-white/25"
+                        style={{ ...styles.input, paddingRight: "40px" }}
                       />
                       <button
                         type="button"
-                        className="absolute inset-y-0 right-2 flex items-center text-muted-foreground transition hover:text-foreground"
                         onClick={() => setShowPassword((prev) => !prev)}
+                        className="absolute right-3 top-1/2 flex -translate-y-1/2 items-center justify-center text-white/35 transition hover:text-white/65"
                         aria-label={showPassword ? "Hide password" : "Show password"}
                       >
-                        {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                        {showPassword ? <EyeOff className="h-[15px] w-[15px]" /> : <Eye className="h-[15px] w-[15px]" />}
                       </button>
                     </div>
                   </div>
 
-                  <label className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Checkbox
-                      id="trusted-device"
-                      checked={trustedDevice}
-                      onCheckedChange={(value) => setTrustedDevice(Boolean(value))}
-                    />
-                    Trust this device
-                  </label>
-
-                  <Button
+                  <button
                     type="submit"
-                    className="h-11 w-full rounded-full bg-gradient-to-r from-[#0F5132] via-[#157347] to-[#198754] font-semibold text-white shadow-lg transition hover:from-[#0d442a] hover:to-[#16794b]"
-                    disabled={submitting || !isSupabaseConfigured}
+                    disabled={submitting}
+                    className="disabled:cursor-not-allowed disabled:opacity-80"
+                    style={styles.primaryButton}
                   >
+                    <span
+                      className="absolute inset-0"
+                      style={{ background: "linear-gradient(135deg, rgba(255,255,255,.06) 0%, transparent 100%)" }}
+                    />
                     {submitting ? (
-                      <span className="flex items-center justify-center gap-2">
-                        <Loader2 className="h-4 w-4 animate-spin" /> Securing session…
-                      </span>
+                      <>
+                        <Loader2 className="relative z-10 h-4 w-4 animate-spin" />
+                        <span className="relative z-10">Signing in...</span>
+                      </>
                     ) : (
-                      "Sign in"
+                      <>
+                        <span className="relative z-10">Sign in to workspace</span>
+                        <ArrowRight className="relative z-10 h-4 w-4" />
+                      </>
                     )}
-                  </Button>
+                  </button>
                 </form>
 
-                <p className="mt-6 text-center text-xs text-muted-foreground">
-                  Having trouble accessing your account? Email
-                  <a
-                    href="mailto:it@girlscouts.council"
-                    className="font-medium text-emerald-700 transition hover:text-emerald-800"
-                  >
-                    {" "}
-                    it@girlscouts.council
-                  </a>{" "}
-                  or contact the council administrator.
-                </p>
-              </CardContent>
-            </Card>
-          </motion.div>
-        </section>
-      </div>
+                <div className="mt-6 text-center">
+                  <p className="text-[11px] leading-7 text-white/30">
+                    Having trouble?{" "}
+                    <a href="#" className="text-[#8DB89E] transition hover:text-[#E8D5A3]">
+                      Contact your administrator
+                    </a>{" "}
+                    or{" "}
+                    <a href="mailto:ilocossur@gsp.org.ph" className="text-[#8DB89E] transition hover:text-[#E8D5A3]">
+                      ilocossur@gsp.org.ph
+                    </a>
+                  </p>
+                </div>
+              </>
+            ) : (
+              <div className="py-8 text-center">
+                <div className="mx-auto mb-4 flex h-[52px] w-[52px] items-center justify-center rounded-full border-2 border-[#4A8A5C] bg-[#4A8A5C]/20">
+                  <Check className="h-[22px] w-[22px] text-[#C5DFD0]" />
+                </div>
+                <div className="mb-1 text-[15px] font-medium text-white">Signed in!</div>
+                <div className="text-xs text-white/40">Redirecting to your workspace...</div>
+              </div>
+            )}
+          </div>
+        </div>
+      </motion.div>
     </div>
   );
 }
-

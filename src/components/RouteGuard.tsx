@@ -1,35 +1,40 @@
-import { Navigate, useLocation } from "react-router-dom";
-import { useSessionStore, selectLoading, selectProfile, selectRole } from "@/store/sessionStore";
-import { isSupabaseConfigured } from "@/integrations/supabase/client";
+import { useEffect } from "react";
+import { useLocation, useNavigate } from "react-router-dom";
+
+import { ROLE_HOME, type UserRole } from "@/lib/permissions";
+import { selectLoading, selectProfile, selectRole, useSessionStore } from "@/store/sessionStore";
 
 interface RouteGuardProps {
-  allowedRoles: Array<"admin" | "cashier" | "accountant" | "hr" | "inventory_clerk" | "manager">;
+  allowedRoles: readonly UserRole[];
   children: React.ReactElement;
   fallbackPath?: string;
 }
 
-export function RouteGuard({ allowedRoles, children, fallbackPath = "/login" }: RouteGuardProps) {
+export function RouteGuard({ allowedRoles, children, fallbackPath }: RouteGuardProps) {
   const loading = useSessionStore(selectLoading);
   const profile = useSessionStore(selectProfile);
   const role = useSessionStore(selectRole);
+  const navigate = useNavigate();
   const location = useLocation();
 
-  if (!isSupabaseConfigured) {
-    return children;
-  }
+  const allowed = !loading && !!profile && !!role && allowedRoles.includes(role);
+  const redirect = !profile ? (fallbackPath ?? "/login") : (ROLE_HOME[role ?? "admin"] ?? "/");
+
+  useEffect(() => {
+    if (!loading && !allowed) {
+      navigate(redirect, { replace: true, state: { from: location.pathname } });
+    }
+  }, [allowed, loading, location.pathname, navigate, redirect]);
 
   if (loading) {
     return (
       <div className="flex h-[60vh] items-center justify-center">
-        <span className="text-sm text-muted-foreground">Checking credentials…</span>
+        <span className="text-sm text-muted-foreground">Checking credentials...</span>
       </div>
     );
   }
 
-  if (!profile || !role || !allowedRoles.includes(role)) {
-    return <Navigate to={fallbackPath} replace state={{ from: location.pathname }} />;
-  }
+  if (!allowed) return null;
 
   return children;
 }
-

@@ -1,6 +1,6 @@
-import { useState, useMemo, useCallback, FormEvent, useRef } from "react";
+import { useState, useCallback, FormEvent, useRef } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { format, isSameDay } from "date-fns";
+import { format } from "date-fns";
 import {
   Card,
   CardContent,
@@ -13,8 +13,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Separator } from "@/components/ui/separator";
 import { Badge } from "@/components/ui/badge";
-import { Popover, PopoverTrigger, PopoverContent } from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";
+import {
+  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
+} from "@/components/ui/select";
 import {
   Dialog,
   DialogContent,
@@ -35,37 +36,55 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
+import { FEATURE_ACCESS, hasRoleAccess } from "@/lib/permissions";
 import { formatCurrency } from "@/utils/format";
-import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
-import { useSessionStore, selectProfile } from "@/store/sessionStore";
+import api from "@/lib/api";
+import { useSessionStore, selectProfile, selectRole } from "@/store/sessionStore";
 import { ReceiptData, ReceiptHistoryItem } from "@/modules/pos/types";
 import { readLocalReceipt, writeLocalReceipt } from "@/modules/pos/utils/receiptStorage";
-import { updateLocalRentalBookingsForSale } from "@/modules/pos/utils/rentalBookingsStorage";
 import {
   Loader2,
-  CalendarIcon,
   Download,
   Printer,
   Mail,
   CheckCircle2,
-  Search,
 } from "lucide-react";
 import { toast } from "sonner";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { ReceiptSettingsPage } from "@/modules/pos/ReceiptSettingsPage";
+import { BIRInvoiceTemplate } from "@/modules/pos/components/BIRInvoiceTemplate";
+import { ThermalReceiptTemplate } from "@/modules/pos/components/ThermalReceiptTemplate";
+import { readLocalReceiptSettings } from "@/modules/pos/utils/receiptSettingsStorage";
+
+type ReceiptRecord = {
+  sale_id: string;
+  sale_number?: string | null;
+  created_at: string;
+  cashier_id?: string | null;
+  cashier?: { full_name?: string | null } | { full_name?: string | null }[] | null;
+  payload?: ReceiptData | null;
+  voided_at?: string | null;
+  voided_by?: string | null;
+  void_reason?: string | null;
+};
 
 export function ReceiptsPage() {
   const profile = useSessionStore(selectProfile);
+  const role = useSessionStore(selectRole);
+  const canManageReceiptSettings = hasRoleAccess(role, FEATURE_ACCESS.manageReceiptSettings);
+  const canFilterByCashier = hasRoleAccess(role, FEATURE_ACCESS.filterReceiptsByCashier);
+  const canViewStaffDirectory = hasRoleAccess(role, FEATURE_ACCESS.viewStaffDirectory);
   const queryClient = useQueryClient();
 
-  const [selectedDate, setSelectedDate] = useState<Date>(() => {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    return today;
-  });
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const [dateFrom, setDateFrom] = useState<string>(todayStr);
+  const [dateTo,   setDateTo]   = useState<string>(todayStr);
+  const [selectedCashier, setSelectedCashier] = useState<string>("all");
+  const [historyPage, setHistoryPage] = useState(1);
   const [receiptData, setReceiptData] = useState<ReceiptData | null>(null);
   const [isReceiptOpen, setIsReceiptOpen] = useState(false);
   const [isDownloadingReceipt, setIsDownloadingReceipt] = useState(false);
-  const [isSendingEmail, setIsSendingEmail] = useState(false);
-  const [isReprintDialogOpen, setIsReprintDialogOpen] = useState(false);
+  const [, setIsReprintDialogOpen] = useState(false);
   const [reprintSaleNumber, setReprintSaleNumber] = useState("");
   const [reprintError, setReprintError] = useState<string | null>(null);
   const [isReprintLoading, setIsReprintLoading] = useState(false);
@@ -74,48 +93,40 @@ export function ReceiptsPage() {
   const [isVoiding, setIsVoiding] = useState(false);
   const receiptRef = useRef<HTMLDivElement>(null);
   const [activeReceipt, setActiveReceipt] = useState<ReceiptHistoryItem | null>(null);
-  const [localReceiptsVersion, setLocalReceiptsVersion] = useState(0);
+  const [, setLocalReceiptsVersion] = useState(0);
 
-  const dayRange = useMemo(() => {
-    const start = new Date(selectedDate);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
-    return {
-      start,
-      end,
-      isoStart: start.toISOString(),
-      isoEnd: end.toISOString(),
-    };
-  }, [selectedDate]);
+  const fromISO = dateFrom ? new Date(dateFrom + "T00:00:00").toISOString() : null;
+  const toISO   = dateTo   ? new Date(dateTo   + "T23:59:59").toISOString() : null;
+  const historyPageSize = 25;
 
-  const { data: remoteReceipts = [], isFetching: loadingReceipts, refetch: refetchReceipts } = useQuery({
-    queryKey: ["receipt-history", dayRange.isoStart],
-    enabled: isSupabaseConfigured,
+  // Cashier list for admin/accountant filter dropdown
+  const { data: cashierList = [] } = useQuery({
+    queryKey: ["receipts-cashier-list"],
+    queryFn: () =>
+      api.get<{ users: { id: string; full_name: string; role: string }[] }>("/auth/users")
+        .then((r) => r.users.filter((u) => u.role === "cashier" || u.role === "admin")),
+    enabled: canViewStaffDirectory,
+    staleTime: 5 * 60 * 1000,
+  });
+
+  const {
+    data: receiptHistoryResponse,
+    isFetching: loadingReceipts,
+    refetch: refetchReceipts,
+  } = useQuery({
+    queryKey: ["receipt-history", fromISO, toISO, selectedCashier, historyPage],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from("sale_receipts")
-        .select(
-          `
-            sale_id,
-            sale_number,
-            cashier_id,
-            created_at,
-            payload,
-            voided_at,
-            voided_by,
-            void_reason,
-            cashier:profiles!sale_receipts_cashier_id_fkey(full_name)
-          `
-        )
-        .gte("created_at", dayRange.isoStart)
-        .lt("created_at", dayRange.isoEnd)
-        .order("created_at", { ascending: false });
+      const params = new URLSearchParams();
+      if (fromISO) params.set("from", fromISO);
+      if (toISO)   params.set("to",   toISO);
+      if (selectedCashier !== "all") params.set("cashier_id", selectedCashier);
+      params.set("page", String(historyPage));
+      params.set("page_size", String(historyPageSize));
+      const qs = params.toString();
+      const { receipts, total } = await api.get<{ receipts: ReceiptRecord[]; total: number }>(`/sales/receipts${qs ? `?${qs}` : ""}`);
 
-      if (error) throw error;
-
-      return (
-        data?.flatMap((record: any) => {
+      const items = (
+        receipts?.flatMap((record) => {
           if (!record?.payload || typeof record.payload !== "object") return [];
           const payload = record.payload as unknown as ReceiptData;
           const voidedAt = record.voided_at ?? payload.voidedAt ?? null;
@@ -151,16 +162,23 @@ export function ReceiptsPage() {
           ];
         }) ?? []
       );
+
+      return { items, total };
     },
   });
 
-  const localReceipts = useMemo(() => {
-    if (isSupabaseConfigured) return [];
+  const remoteReceipts = receiptHistoryResponse?.items ?? [];
+  const remoteReceiptTotal = receiptHistoryResponse?.total ?? 0;
+  const totalHistoryPages = Math.max(1, Math.ceil(remoteReceiptTotal / historyPageSize));
+
+  const localReceipts = (() => {
     const stored = readLocalReceipt();
     if (!stored) return [];
     const storedDate = new Date(stored.createdAt);
     if (Number.isNaN(storedDate.getTime())) return [];
-    return isSameDay(storedDate, selectedDate)
+    const afterFrom = fromISO ? storedDate >= new Date(fromISO) : true;
+    const beforeTo  = toISO   ? storedDate <= new Date(toISO)   : true;
+    return afterFrom && beforeTo
       ? [
           {
             saleId: stored.saleId,
@@ -179,11 +197,16 @@ export function ReceiptsPage() {
           } satisfies ReceiptHistoryItem,
         ]
       : [];
-  }, [selectedDate, localReceiptsVersion]);
+  })();
 
-  const receiptHistoryList = isSupabaseConfigured ? remoteReceipts : localReceipts;
+  const receiptHistoryList = remoteReceipts.length > 0 ? remoteReceipts : localReceipts;
   const hasReceipts = receiptHistoryList.length > 0;
-  const canVoid = profile?.role === "admin";
+  const canVoid = hasRoleAccess(profile?.role, FEATURE_ACCESS.voidSales);
+
+  const handleHistoryFilterChange = useCallback((updater: () => void) => {
+    updater();
+    setHistoryPage(1);
+  }, []);
 
   const normalizeSaleNumber = useCallback((value: string) => {
     const trimmed = value.trim();
@@ -192,11 +215,6 @@ export function ReceiptsPage() {
     const uuidPattern = /^[0-9a-fA-F-]{36}$/;
     if (uuidPattern.test(cleaned)) return cleaned;
     return cleaned.toUpperCase();
-  }, []);
-
-  const formatPercent = useCallback((rate: number) => {
-    const percentage = rate * 100;
-    return Number.isInteger(percentage) ? percentage.toFixed(0) : percentage.toFixed(1);
   }, []);
 
   const handleOpenReceipt = useCallback((item: ReceiptHistoryItem) => {
@@ -233,19 +251,25 @@ export function ReceiptsPage() {
     setActiveReceipt(null);
   };
 
-  const handlePrintReceipt = () => {
+  const handlePrintReceipt = useCallback(() => {
     if (!receiptRef.current || !receiptData) {
       toast.error("Receipt is not ready to print yet.");
       return;
     }
 
-    const printWindow = window.open("", "_blank", "width=600,height=800");
-    if (!printWindow) {
-      toast.error("Pop-up blocked. Enable pop-ups to print the receipt.");
-      return;
-    }
+    const prefs = readLocalReceiptSettings();
+    const paperWidth = prefs?.paperWidth ?? "a4";
+    const thermalStyle = paperWidth === "a4" ? "" : paperWidth === "58mm" ? `
+      @page { margin: 0; size: 58mm; }
+      body { width: 58mm; padding: 2px 3mm; font-size: 9px; margin: 0; }
+      .receipt-wrapper { max-width: 52mm; margin: 0; border: none; padding: 0; }
+    ` : `
+      @page { margin: 0; size: 80mm; }
+      body { width: 80mm; padding: 4px 6px; font-size: 11px; }
+      .receipt-wrapper { max-width: 100%; border: none; padding: 0; }
+    `;
 
-    printWindow.document.write(`
+    const html = `
       <html>
         <head>
           <title>Receipt ${receiptData.saleNumber ?? receiptData.saleId}</title>
@@ -260,18 +284,38 @@ export function ReceiptsPage() {
             th, td { text-align: left; font-size: 12px; padding: 4px 0; }
             th:nth-child(2), td:nth-child(2) { text-align: center; }
             th:nth-child(3), td:nth-child(3) { text-align: right; }
+            ${thermalStyle}
           </style>
         </head>
         <body>
           <div class="receipt-wrapper">${receiptRef.current.innerHTML}</div>
         </body>
       </html>
-    `);
+    `;
 
-    printWindow.document.close();
-    printWindow.focus();
-    printWindow.print();
-  };
+    const iframe = document.createElement("iframe");
+    iframe.style.cssText = "position:fixed;top:-9999px;left:-9999px;width:1px;height:1px;border:0;";
+    document.body.appendChild(iframe);
+
+    const iframeDoc = iframe.contentDocument ?? iframe.contentWindow?.document;
+    if (!iframeDoc) {
+      document.body.removeChild(iframe);
+      toast.error("Could not prepare print frame.");
+      return;
+    }
+
+    iframeDoc.open();
+    iframeDoc.write(html);
+    iframeDoc.close();
+
+    iframe.onload = () => {
+      iframe.contentWindow?.focus();
+      iframe.contentWindow?.print();
+      setTimeout(() => {
+        if (document.body.contains(iframe)) document.body.removeChild(iframe);
+      }, 1000);
+    };
+  }, [receiptData]);
 
   const handleVoidReceipt = useCallback(async () => {
     if (!activeReceipt || !receiptData) return;
@@ -302,66 +346,35 @@ export function ReceiptsPage() {
 
     setIsVoiding(true);
     try {
-      if (!isSupabaseConfigured) {
-        applyLocalUpdate(activeReceipt.saleId ?? null);
-        updateLocalRentalBookingsForSale(activeReceipt.saleId ?? null, "cancelled");
-        toast.success("Receipt voided (demo mode).");
-      } else {
-        let resolvedSaleId: string | null = activeReceipt.saleId ?? null;
+      const resolvedSaleId: string | null = activeReceipt.saleId ?? null;
 
-        if (!resolvedSaleId && activeReceipt.saleNumber) {
-          const { data: saleByNumber, error: lookupError } = await supabase
-            .from("sales")
-            .select("id")
-            .eq("sale_number", activeReceipt.saleNumber)
-            .maybeSingle();
-
-          if (lookupError) throw lookupError;
-          resolvedSaleId = saleByNumber?.id ?? null;
-        }
-
-        if (!resolvedSaleId) {
-          throw new Error("SALE_NOT_FOUND");
-        }
-
-        const { error: voidError } = await supabase.rpc("void_sale", {
-          p_sale_id: resolvedSaleId,
-          p_reason: reason,
-          p_voided_by: profile?.id ?? null,
-        });
-
-        if (voidError) {
-          const details = `${voidError.details ?? ""} ${voidError.message ?? ""}`;
-          if (details.includes("SALE_ALREADY_VOIDED")) {
-            toast.info("This sale has already been voided.");
-          } else if (details.includes("SALE_NOT_FOUND")) {
-            throw new Error("Sale not found. Please refresh and try again.");
-          } else {
-            throw voidError;
-          }
-        } else {
-          toast.success("Receipt voided successfully.");
-        }
-
-        const { error: bookingUpdateError } = await supabase
-          .from("rental_bookings")
-          .update({ status: "cancelled" })
-          .eq("sale_id", resolvedSaleId);
-        if (bookingUpdateError) {
-          console.warn("Failed to cancel rental bookings", bookingUpdateError);
-        }
-
-        applyLocalUpdate(resolvedSaleId);
-        await refetchReceipts();
-        await queryClient.invalidateQueries({ queryKey: ["dashboard", "summary"] });
-        await queryClient.invalidateQueries({ queryKey: ["products", "inventory"] });
-        await queryClient.invalidateQueries({ queryKey: ["receipt-history"] });
-        await queryClient.invalidateQueries({ queryKey: ["rental-bookings"] });
+      if (!resolvedSaleId) {
+        throw new Error("SALE_NOT_FOUND");
       }
+
+      const voidResult = await api.post<{ success: boolean; accountingError?: boolean; warning?: string }>(`/sales/${resolvedSaleId}/void`, { reason });
+
+      try {
+        await api.patch(`/rental/bookings/by-sale/${resolvedSaleId}`, { status: "cancelled" });
+      } catch (bookingError) {
+        if (import.meta.env.DEV) console.warn("Failed to cancel rental bookings", bookingError);
+      }
+
+      applyLocalUpdate(resolvedSaleId);
+      if (voidResult.accountingError) {
+        toast.error(voidResult.warning ?? "Sale voided but accounting reversal failed. Post a manual reversal in Accounting → Manual Journal.");
+      } else {
+        toast.success("Receipt voided successfully.");
+      }
+      await refetchReceipts();
+      await queryClient.invalidateQueries({ queryKey: ["dashboard", "summary"] });
+      await queryClient.invalidateQueries({ queryKey: ["products", "inventory"] });
+      await queryClient.invalidateQueries({ queryKey: ["receipt-history"] });
+      await queryClient.invalidateQueries({ queryKey: ["rental-bookings"] });
       setIsVoidDialogOpen(false);
       setVoidReason("");
     } catch (error) {
-      console.error(error);
+      if (import.meta.env.DEV) console.error(error);
       const message =
         error instanceof Error && error.message
           ? error.message
@@ -375,7 +388,6 @@ export function ReceiptsPage() {
     receiptData,
     voidReason,
     profile?.id,
-    isSupabaseConfigured,
     refetchReceipts,
     queryClient,
   ]);
@@ -402,7 +414,7 @@ export function ReceiptsPage() {
         .save();
       toast.success("Receipt downloaded");
     } catch (error) {
-      console.error(error);
+      if (import.meta.env.DEV) console.error(error);
       toast.error("Failed to download receipt.");
     } finally {
       setIsDownloadingReceipt(false);
@@ -410,45 +422,7 @@ export function ReceiptsPage() {
   };
 
   const handleEmailReceipt = async () => {
-    if (!receiptData?.memberEmail) {
-      toast.error("No email found for this member.");
-      return;
-    }
-
-    if (!isSupabaseConfigured) {
-      toast.info("Supabase is not configured. Email sending is unavailable.");
-      return;
-    }
-
-    setIsSendingEmail(true);
-    try {
-      const { error } = await supabase.functions.invoke("send-pos-receipt", {
-        body: {
-          saleId: receiptData.saleId,
-          saleNumber: receiptData.saleNumber,
-          email: receiptData.memberEmail,
-          memberName: receiptData.memberName,
-          paymentMethod: receiptData.paymentMethod,
-          subtotal: receiptData.subtotal,
-          discount: receiptData.discount,
-          tax: receiptData.tax,
-          total: receiptData.total,
-          branch: receiptData.branch,
-          createdAt: receiptData.createdAt,
-          items: receiptData.items,
-        },
-      });
-
-      if (error) throw error;
-
-      toast.success("Receipt emailed successfully");
-    } catch (error) {
-      console.error(error);
-      const message = error instanceof Error ? error.message : "Unable to email receipt right now.";
-      toast.error(message);
-    } finally {
-      setIsSendingEmail(false);
-    }
+    toast.info("Email receipt feature is not currently available.");
   };
 
   const handleReprintLookup = async (event: FormEvent<HTMLFormElement>) => {
@@ -464,95 +438,42 @@ export function ReceiptsPage() {
     setReprintError(null);
 
     try {
-      if (!isSupabaseConfigured) {
-        const stored = readLocalReceipt();
-        if (!stored) {
-          setReprintError("No receipts are stored yet in demo mode.");
-          setIsReprintLoading(false);
-          return;
-        }
-
-        const storedSaleNumber = stored.saleNumber ? normalizeSaleNumber(stored.saleNumber) : null;
-        const storedReceiptNumber =
-          stored.receiptNumber != null ? normalizeSaleNumber(String(stored.receiptNumber)) : null;
-        if (
-          storedSaleNumber &&
-          storedSaleNumber !== code &&
-          normalizeSaleNumber(stored.saleId) !== code &&
-          (!storedReceiptNumber || storedReceiptNumber !== code)
-        ) {
-          setReprintError("Only the most recent receipt is available in demo mode.");
-          setIsReprintLoading(false);
-          return;
-        }
-
-        const normalizedStored: ReceiptData = {
-          ...stored,
-          cashierId: stored.cashierId ?? null,
-          cashierName: stored.cashierName ?? null,
-        };
-        setReceiptData(normalizedStored);
-        writeLocalReceipt(normalizedStored);
-        setIsReceiptOpen(true);
-        setIsReprintDialogOpen(false);
-        setIsReprintLoading(false);
-        return;
-      }
-
-      let receiptQuery = supabase
-        .from("sale_receipts")
-        .select(
-          `
-            payload,
-            cashier_id,
-            cashier:profiles!sale_receipts_cashier_id_fkey(full_name)
-          `
-        )
-        .limit(1);
       const uuidPattern = /^[0-9a-fA-F-]{36}$/;
       const numericPattern = /^\d+$/;
-      if (uuidPattern.test(code)) {
-        receiptQuery = receiptQuery.or(`sale_id.eq.${code},sale_number.eq.${code}`);
-      } else {
-        receiptQuery = receiptQuery.eq("sale_number", code);
-      }
 
-      let { data, error } = await receiptQuery.maybeSingle();
+      const params = new URLSearchParams({
+        search: code,
+        page: "1",
+        page_size: "25",
+      });
+      const { receipts } = await api.get<{ receipts: ReceiptRecord[] }>(`/sales/receipts?${params.toString()}`);
 
-      if (!data && !error && numericPattern.test(code)) {
-        const fallback = await supabase
-          .from("sale_receipts")
-          .select(
-            `
-              payload,
-              cashier_id,
-              cashier:profiles!sale_receipts_cashier_id_fkey(full_name)
-            `
-          )
-          .filter("payload->>receiptNumber", "eq", code)
-          .limit(1)
-          .maybeSingle();
-        data = fallback.data;
-        if (!error) {
-          error = fallback.error;
+      const found = receipts?.find((record) => {
+        if (uuidPattern.test(code)) {
+          return record.sale_id === code || record.sale_number === code;
         }
-      }
+        if (numericPattern.test(code)) {
+          return (
+            record.sale_number === code ||
+            String(record.payload?.receiptNumber) === code
+          );
+        }
+        return record.sale_number === code;
+      }) ?? null;
 
-      if (error) throw error;
-
-      if (!data?.payload || typeof data.payload !== "object") {
+      if (!found?.payload || typeof found.payload !== "object") {
         setReprintError("Receipt not found.");
         setIsReprintLoading(false);
         return;
       }
 
-      const payload = data.payload as unknown as ReceiptData;
-      const cashierNameFromJoin = Array.isArray((data as any)?.cashier)
-        ? (data as any).cashier[0]?.full_name
-        : (data as any).cashier?.full_name;
+      const payload = found.payload as unknown as ReceiptData;
+      const cashierNameFromJoin = Array.isArray(found?.cashier)
+        ? found.cashier[0]?.full_name
+        : found?.cashier?.full_name;
       const normalizedPayload: ReceiptData = {
         ...payload,
-        cashierId: payload.cashierId ?? data?.cashier_id ?? null,
+        cashierId: payload.cashierId ?? found?.cashier_id ?? null,
         cashierName: payload.cashierName ?? cashierNameFromJoin ?? null,
       };
       setReceiptData(normalizedPayload);
@@ -560,7 +481,7 @@ export function ReceiptsPage() {
       setIsReceiptOpen(true);
       setIsReprintDialogOpen(false);
     } catch (error) {
-      console.error(error);
+      if (import.meta.env.DEV) console.error(error);
       const message = error instanceof Error ? error.message : "Unable to load receipt.";
       setReprintError(message);
       toast.error(message);
@@ -572,56 +493,74 @@ export function ReceiptsPage() {
   return (
     <div className="space-y-6 pb-24">
       <header className="border-b border-border/60 bg-background/95">
-        <div className="mx-auto flex w-full max-w-6xl flex-col gap-2 px-4 py-6 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:px-8">
+        <div className="flex w-full flex-col gap-2 py-6 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-semibold text-foreground">Receipt History</h1>
+            <h1 className="text-2xl font-semibold text-foreground">Receipts</h1>
             <p className="text-sm text-muted-foreground">
-              Browse daily transactions and reopen receipts for printing, downloads, or emailing.
+              Browse daily transactions, reprint receipts, and manage your receipt series.
             </p>
-          </div>
-          <div className="flex items-center gap-3 text-xs text-muted-foreground">
-            <Search className="h-4 w-4" />
-            Reprint or resend receipts in just a few clicks.
           </div>
         </div>
       </header>
 
-      <div className="mx-auto grid w-full max-w-6xl gap-6 px-4 sm:px-6 lg:px-8 lg:grid-cols-[2fr_1fr]">
+      <div className="w-full">
+        <Tabs defaultValue="history">
+          <TabsList className="mb-6">
+            <TabsTrigger value="history">Receipt History</TabsTrigger>
+            {canManageReceiptSettings && (
+              <TabsTrigger value="settings">Receipt Settings</TabsTrigger>
+            )}
+          </TabsList>
+
+          <TabsContent value="history">
+            <div className="grid gap-6 lg:grid-cols-[2fr_1fr]">
         <Card className="border-border">
-          <CardHeader className="space-y-3 sm:flex sm:items-center sm:justify-between">
+          <CardHeader className="space-y-3">
             <div className="flex flex-col gap-1">
-              <CardTitle className="text-card-foreground">Daily Receipts</CardTitle>
-              <CardDescription>Receipts processed on the selected day.</CardDescription>
+              <CardTitle className="text-card-foreground">Receipt History</CardTitle>
+              <CardDescription>Filter by date range{canFilterByCashier ? " and cashier" : ""}.</CardDescription>
             </div>
-            <Popover>
-              <PopoverTrigger asChild>
-                <Button
-                  variant="outline"
-                  className={cn("w-full justify-start sm:w-auto", !selectedDate && "text-muted-foreground")}
-                >
-                  <CalendarIcon className="mr-2 h-4 w-4" />
-                  {selectedDate ? format(selectedDate, "PPP") : "Select date"}
-                </Button>
-              </PopoverTrigger>
-              <PopoverContent className="w-auto p-0" align="end">
-                <Calendar
-                  mode="single"
-                  selected={selectedDate}
-                  onSelect={(value) => {
-                    if (value) {
-                      const normalized = new Date(value);
-                      normalized.setHours(0, 0, 0, 0);
-                      setSelectedDate(normalized);
-                      if (isSupabaseConfigured) {
-                        refetchReceipts();
-                      }
-                    }
-                  }}
-                  disabled={(date) => date > new Date()}
-                  initialFocus
+            <div className="flex flex-wrap gap-2 items-end">
+              <div className="space-y-1">
+                <Label htmlFor="receipts-date-from" className="text-xs">From</Label>
+                <Input
+                  id="receipts-date-from"
+                  type="date"
+                  value={dateFrom}
+                  max={dateTo || todayStr}
+                  onChange={(e) => handleHistoryFilterChange(() => setDateFrom(e.target.value))}
+                  className="h-9 w-36 text-sm"
                 />
-              </PopoverContent>
-            </Popover>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor="receipts-date-to" className="text-xs">To</Label>
+                <Input
+                  id="receipts-date-to"
+                  type="date"
+                  value={dateTo}
+                  min={dateFrom}
+                  max={todayStr}
+                  onChange={(e) => handleHistoryFilterChange(() => setDateTo(e.target.value))}
+                  className="h-9 w-36 text-sm"
+                />
+              </div>
+              {canFilterByCashier && cashierList.length > 0 && (
+                <div className="space-y-1">
+                  <Label className="text-xs" htmlFor="receipts-cashier-filter">Cashier</Label>
+                  <Select value={selectedCashier} onValueChange={(value) => handleHistoryFilterChange(() => setSelectedCashier(value))}>
+                    <SelectTrigger id="receipts-cashier-filter" className="h-9 w-44 text-sm">
+                      <SelectValue placeholder="All Accounts" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Accounts</SelectItem>
+                      {cashierList.map((c) => (
+                        <SelectItem key={c.id} value={c.id}>{c.full_name}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+              )}
+            </div>
           </CardHeader>
           <CardContent className="space-y-3">
             {loadingReceipts ? (
@@ -671,7 +610,12 @@ export function ReceiptsPage() {
                           <div className="text-xs text-muted-foreground/80">Reason: {item.voidReason}</div>
                         ) : null}
                       </div>
-                      <Button size="sm" variant="outline" onClick={() => handleOpenReceipt(item)}>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => handleOpenReceipt(item)}
+                        aria-label={`View receipt ${item.saleNumber}`}
+                      >
                         View
                       </Button>
                     </div>
@@ -680,12 +624,39 @@ export function ReceiptsPage() {
               </div>
             ) : (
               <div className="rounded-md border border-dashed border-muted-foreground/50 px-3 py-6 text-center text-sm text-muted-foreground">
-                No receipts recorded for this day yet.
+                No receipts matched your current filters. Try widening the date range or changing the cashier filter.
               </div>
             )}
             <p className="text-xs text-muted-foreground">
               Looking for a different receipt? Use the reprint tool to search by sale or receipt number.
             </p>
+            {remoteReceiptTotal > historyPageSize ? (
+              <div className="flex items-center justify-between gap-3 border-t pt-3">
+                <p className="text-xs text-muted-foreground">
+                  Page {historyPage} of {totalHistoryPages} · {remoteReceiptTotal} receipt{remoteReceiptTotal === 1 ? "" : "s"}
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={historyPage <= 1 || loadingReceipts}
+                    onClick={() => setHistoryPage((value) => Math.max(1, value - 1))}
+                  >
+                    Previous
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={historyPage >= totalHistoryPages || loadingReceipts}
+                    onClick={() => setHistoryPage((value) => Math.min(totalHistoryPages, value + 1))}
+                  >
+                    Next
+                  </Button>
+                </div>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
 
@@ -700,16 +671,11 @@ export function ReceiptsPage() {
                 <Label htmlFor="receipt-code">Sale or Receipt Number</Label>
                 <Input
                   id="receipt-code"
-                  placeholder="POS-123456789 or receipt ID"
+                  placeholder="POS-NO or receipt ID"
                   value={reprintSaleNumber}
                   onChange={(event) => setReprintSaleNumber(event.target.value)}
                 />
                 {reprintError ? <p className="text-xs font-medium text-destructive">{reprintError}</p> : null}
-                {!isSupabaseConfigured ? (
-                  <p className="text-[11px] text-muted-foreground">
-                    Demo mode keeps only the most recent receipt locally.
-                  </p>
-                ) : null}
               </div>
               <Button type="submit" className="w-full" disabled={isReprintLoading}>
                 {isReprintLoading ? (
@@ -729,6 +695,15 @@ export function ReceiptsPage() {
             </div>
           </CardContent>
         </Card>
+            </div>
+          </TabsContent>
+
+          {canManageReceiptSettings && (
+            <TabsContent value="settings">
+              <ReceiptSettingsPage embedded />
+            </TabsContent>
+          )}
+        </Tabs>
       </div>
 
       <Dialog open={isReceiptOpen} onOpenChange={(open) => (open ? setIsReceiptOpen(true) : handleCloseReceipt())}>
@@ -741,128 +716,23 @@ export function ReceiptsPage() {
             <div className="space-y-6">
               <div
                 ref={receiptRef}
-                className="rounded-lg border border-dashed border-muted-foreground/40 bg-white p-6 font-mono text-sm text-foreground shadow-inner"
+                aria-label="Receipt preview"
+                className="rounded-lg border border-muted-foreground/30 bg-white shadow-inner overflow-auto max-h-[60vh]"
               >
-                {receiptData.voidedAt ? (
-                  <div className="mb-4 flex flex-col items-center gap-1 rounded border border-destructive/50 bg-destructive/10 p-3 text-destructive">
-                    <span className="text-sm font-semibold uppercase tracking-wide">Voided Receipt</span>
-                    <span className="text-xs">
-                      Voided on {format(new Date(receiptData.voidedAt), "PPpp")}
-                      {receiptData.voidReason ? ` · ${receiptData.voidReason}` : ""}
-                    </span>
-                  </div>
-                ) : null}
-                <div className="text-center">
-                  <h2 className="text-lg font-semibold tracking-[0.35em] uppercase">Girl Scout Shop</h2>
-                  <p className="text-xs text-muted-foreground">{receiptData.branch ?? "Main Branch"}</p>
-                  <p className="mt-1 text-xs text-muted-foreground">
-                    {new Date(receiptData.createdAt).toLocaleString()}
-                  </p>
-                </div>
-
-                <div className="my-4 border-t border-dashed border-muted-foreground/50" />
-
-                <div className="grid grid-cols-2 gap-1 text-xs">
-                  <span className="text-muted-foreground">Sale ID</span>
-                  <span className="text-right font-medium">{receiptData.saleNumber ?? receiptData.saleId}</span>
-                  {receiptData.cashierName ? (
-                    <>
-                      <span className="text-muted-foreground">Cashier</span>
-                      <span className="text-right font-medium">{receiptData.cashierName}</span>
-                    </>
-                  ) : null}
-                  {typeof receiptData.receiptNumber === "number" ? (
-                    <>
-                      <span className="text-muted-foreground">Receipt #</span>
-                      <span className="text-right font-medium">#{receiptData.receiptNumber}</span>
-                    </>
-                  ) : null}
-                  {receiptData.memberName ? (
-                    <>
-                      <span className="text-muted-foreground">Member</span>
-                      <span className="text-right font-medium">{receiptData.memberName}</span>
-                      <span className="text-muted-foreground">Discount</span>
-                      <span className="text-right font-medium">
-                        {formatPercent(Number(receiptData.memberDiscountRate ?? 0))}%
-                      </span>
-                    </>
-                  ) : null}
-                  <span className="text-muted-foreground">Payment</span>
-                  <span className="text-right font-medium uppercase">{receiptData.paymentMethod}</span>
-                  {receiptData.receiptIssuedAt ? (
-                    <>
-                      <span className="text-muted-foreground">Issued</span>
-                      <span className="text-right font-medium">
-                        {format(new Date(receiptData.receiptIssuedAt), "PPP")}
-                      </span>
-                    </>
-                  ) : null}
-                </div>
-
-                <div className="my-4 border-t border-dashed border-muted-foreground/50" />
-
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-widest text-muted-foreground">
-                    <span>Item</span>
-                    <span>Qty × Price</span>
-                    <span>Total</span>
-                  </div>
-                  {receiptData.items.map((item) => (
-                    <div
-                      key={`${item.id}-${item.sku}`}
-                      className="flex items-end justify-between rounded border border-transparent px-1 py-1 transition hover:border-muted-foreground/30"
-                    >
-                      <div>
-                        <span className="block text-sm font-semibold">{item.name}</span>
-                        {item.sku ? (
-                          <span className="text-[10px] uppercase text-muted-foreground">SKU: {item.sku}</span>
-                        ) : null}
-                      </div>
-                      <span className="text-xs text-muted-foreground">
-                        {item.quantity} × {formatCurrency(item.price)}
-                      </span>
-                      <span className="text-sm font-semibold">{formatCurrency(item.subtotal)}</span>
-                    </div>
-                  ))}
-                </div>
-
-                <div className="my-4 border-t border-dashed border-muted-foreground/50" />
-
-                <div className="space-y-1 text-xs">
-                  <div className="flex justify-between">
-                    <span className="uppercase tracking-widest text-muted-foreground">Subtotal</span>
-                    <span className="font-semibold">{formatCurrency(receiptData.subtotal)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="uppercase tracking-widest text-muted-foreground">Discount</span>
-                    <span className="font-semibold">-{formatCurrency(receiptData.discount)}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="uppercase tracking-widest text-muted-foreground">Tax</span>
-                    <span className="font-semibold">{formatCurrency(receiptData.tax)}</span>
-                  </div>
-                  <div className="flex justify-between border-t border-dashed border-muted-foreground/40 pt-2 text-base font-bold">
-                    <span>Total</span>
-                    <span>{formatCurrency(receiptData.total)}</span>
-                  </div>
-                </div>
-
-                {receiptData.thankYouMessage ? (
-                  <p className="mt-4 text-center text-xs font-semibold text-emerald-600">
-                    {receiptData.thankYouMessage}
-                  </p>
+                {readLocalReceiptSettings()?.paperWidth === "58mm" ? (
+                  <ThermalReceiptTemplate receiptData={receiptData} />
                 ) : (
-                  <p className="mt-4 text-center text-xs text-muted-foreground">Thank you for your purchase!</p>
+                  <BIRInvoiceTemplate receiptData={receiptData} />
                 )}
               </div>
 
               <DialogFooter className="flex flex-wrap items-center justify-between gap-3">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Button variant="outline" onClick={handlePrintReceipt}>
+                    <Button variant="outline" onClick={handlePrintReceipt}>
                     <Printer className="mr-2 h-4 w-4" />
                     Print Receipt
                   </Button>
-                  <Button variant="outline" onClick={handleDownloadReceipt} disabled={isDownloadingReceipt}>
+                    <Button variant="outline" onClick={handleDownloadReceipt} disabled={isDownloadingReceipt}>
                     {isDownloadingReceipt ? (
                       <span className="flex items-center gap-2">
                         <Loader2 className="h-4 w-4 animate-spin" />
@@ -876,18 +746,9 @@ export function ReceiptsPage() {
                     )}
                   </Button>
                   {receiptData.memberEmail ? (
-                    <Button variant="outline" onClick={handleEmailReceipt} disabled={isSendingEmail}>
-                      {isSendingEmail ? (
-                        <span className="flex items-center gap-2">
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                          Sending…
-                        </span>
-                      ) : (
-                        <>
-                          <Mail className="mr-2 h-4 w-4" />
-                          Email Receipt
-                        </>
-                      )}
+                    <Button variant="outline" onClick={handleEmailReceipt}>
+                      <Mail className="mr-2 h-4 w-4" />
+                      Email Receipt
                     </Button>
                   ) : null}
                 </div>

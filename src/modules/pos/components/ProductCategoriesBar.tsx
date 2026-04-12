@@ -1,8 +1,9 @@
+import { useEffect, useRef, useState, type ComponentType } from "react";
+import { ChevronDown, Plus } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
-import { useEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { Plus } from "lucide-react";
 
 type CategoryOption = {
   id: string;
@@ -12,7 +13,7 @@ type CategoryOption = {
 type CategoryGroup = {
   key: string;
   label: string;
-  icon: string;
+  icon: ComponentType<{ className?: string }>;
   categories: CategoryOption[];
 };
 
@@ -39,7 +40,9 @@ export function ProductCategoriesBar({
   const [lastClosedCategory, setLastClosedCategory] = useState<string | null>(null);
   const categoryBarRef = useRef<HTMLDivElement>(null);
   const prevActiveCategoryRef = useRef<string>(activeCategory);
-  const prevCategoriesRef = useRef<number>(groupedCategories.reduce((count, group) => count + group.categories.length, 0));
+  const prevCategoriesRef = useRef<number>(
+    groupedCategories.reduce((count, group) => count + group.categories.length, 0)
+  );
 
   useEffect(() => {
     const totalCategories = groupedCategories.reduce((count, group) => count + group.categories.length, 0);
@@ -100,7 +103,7 @@ export function ProductCategoriesBar({
 
   return (
     <Card className="w-full border-border bg-card/95 shadow-sm">
-      <CardContent ref={categoryBarRef} className="flex flex-col gap-4 pt-4 pb-6">
+      <CardContent ref={categoryBarRef} className="flex flex-col gap-4 pb-6 pt-4">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <div className="text-sm font-semibold text-card-foreground">Product Categories</div>
@@ -151,12 +154,13 @@ export function ProductCategoriesBar({
           <div className="flex flex-wrap items-start gap-3 overflow-visible">
             {groupedCategories.map((group) => {
               const isOpen = openGroup === group.key;
+              const GroupIcon = group.icon;
+
               return (
                 <div
                   key={group.key}
                   className={cn(
-                    "relative flex-1 min-w-[180px] sm:flex-none rounded-xl border border-border/70 bg-background/95 shadow-sm backdrop-blur-sm",
-                    "overflow-visible",
+                    "relative min-w-[180px] flex-1 overflow-visible rounded-xl border border-border/70 bg-background/95 shadow-sm backdrop-blur-sm sm:flex-none",
                     isOpen ? "z-20" : "z-0"
                   )}
                 >
@@ -170,12 +174,14 @@ export function ProductCategoriesBar({
                     )}
                   >
                     <span className="flex items-center gap-2">
-                      <span className="text-lg leading-none">{group.icon}</span>
+                      <span className="flex h-8 w-8 items-center justify-center rounded-full bg-primary/10 text-primary">
+                        <GroupIcon className="h-4 w-4" />
+                      </span>
                       {group.label}
                     </span>
-                    <span className={cn("text-xs font-medium text-muted-foreground transition-transform", isOpen ? "rotate-180" : "")}>
-                      ▼
-                    </span>
+                    <ChevronDown
+                      className={cn("h-4 w-4 text-muted-foreground transition-transform", isOpen ? "rotate-180" : "")}
+                    />
                   </button>
                   {isOpen && (
                     <div className="absolute left-0 top-full z-20 mt-2 w-max min-w-[200px] max-w-[280px] rounded-xl border border-border/80 bg-card shadow-lg">
@@ -217,4 +223,3 @@ export function ProductCategoriesBar({
     </Card>
   );
 }
-

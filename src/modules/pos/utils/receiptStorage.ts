@@ -1,4 +1,4 @@
-import { ReceiptData } from "@/modules/pos/types";
+import type { ReceiptData } from "@/modules/pos/types";
 
 const LOCAL_RECEIPT_KEY = "gsp-pos-last-receipt";
 

@@ -1,25 +1,17 @@
 import { useEffect, useRef } from "react";
-import { supabase, isSupabaseConfigured } from "@/integrations/supabase/client";
+import api from "@/lib/api";
 import { useSessionStore, selectProfile } from "@/store/sessionStore";
 import type { POSCartItem } from "@/store/posStore";
 
-async function upsertActiveCart(cart: POSCartItem[], profileId: string, branch: string | null) {
-  const { data: existing, error: fetchError } = await supabase
-    .from("active_carts")
-    .select("id")
-    .eq("created_by", profileId)
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
-
-  if (fetchError) {
-    throw fetchError;
-  }
+async function upsertActiveCart(cart: POSCartItem[], _profileId: string, branch: string | null) {
+  const { cart: existing } = await api.get<{ cart: { id: string } | null; items: unknown[] }>(
+    "/carts/active"
+  );
 
   if (cart.length === 0) {
     if (existing?.id) {
-      await supabase.from("active_cart_items").delete().eq("active_cart_id", existing.id);
-      await supabase.from("active_carts").delete().eq("id", existing.id);
+      await api.delete(`/carts/active/${existing.id}/items`);
+      await api.delete(`/carts/active/${existing.id}`);
     }
     return;
   }
@@ -27,36 +19,22 @@ async function upsertActiveCart(cart: POSCartItem[], profileId: string, branch: 
   let activeId = existing?.id;
 
   if (!activeId) {
-    const { data: created, error: createError } = await supabase
-      .from("active_carts")
-      .insert({
-        created_by: profileId,
-        branch,
-      })
-      .select()
-      .single();
-
-    if (createError) {
-      throw createError;
-    }
-
+    const { cart: created } = await api.post<{ cart: { id: string } }>("/carts/active", {
+      branch,
+    });
     activeId = created.id;
   } else {
-    await supabase.from("active_cart_items").delete().eq("active_cart_id", activeId);
+    await api.delete(`/carts/active/${activeId}/items`);
   }
 
-  const payload = cart.map((item) => ({
-    active_cart_id: activeId,
+  const items = cart.map((item) => ({
     product_id: item.id,
     quantity: item.quantity,
     unit_price: item.price,
   }));
 
-  if (payload.length > 0) {
-    const { error: insertError } = await supabase.from("active_cart_items").insert(payload);
-    if (insertError) {
-      throw insertError;
-    }
+  if (items.length > 0) {
+    await api.post(`/carts/active/${activeId}/items`, { items });
   }
 }
 
@@ -65,9 +43,7 @@ export function useCartSync(cart: POSCartItem[]) {
   const syncingRef = useRef(false);
 
   useEffect(() => {
-    if (!isSupabaseConfigured || !profile?.id) {
-      return;
-    }
+    if (!profile?.id) return;
 
     let isMounted = true;
 
@@ -93,4 +69,3 @@ export function useCartSync(cart: POSCartItem[]) {
     };
   }, [cart, profile?.id, profile?.branch]);
 }
-
