@@ -3,7 +3,7 @@
 -- =============================================================
 -- Run AFTER db/schema.sql has been applied.
 -- HOW TO RUN (from project root, Git Bash):
---   PGPASSWORD='uwy_BKZ7bpx4yep6ftv' "/c/Program Files/PostgreSQL/18/bin/psql" \
+--   PGPASSWORD='sample' "/c/Program Files/PostgreSQL/18/bin/psql" \
 --     -U gsp_user -d gsp_db -h localhost -f db/migrate-products.sql
 -- VERIFY:
 --   SELECT COUNT(*) FROM public.product_categories; -- 51
