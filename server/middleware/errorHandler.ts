@@ -1,4 +1,5 @@
 import { NextFunction, Request, Response } from "express";
+import { logger } from "../logger";
 
 export function notFoundHandler(_req: Request, res: Response) {
   return res.status(404).json({ error: "Not found" });
@@ -17,6 +18,6 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     return res.status(403).json({ error: "Origin not allowed" });
   }
 
-  console.error(err);
+  logger.error({ err }, "Unhandled request error");
   return res.status(500).json({ error: "Internal server error" });
 }

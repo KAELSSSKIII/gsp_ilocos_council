@@ -14,6 +14,7 @@ import { createRateLimiter } from "../middleware/security";
 import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
 import { validateBody } from "../middleware/validate";
 import { authLoginSchema } from "../validation/schemas";
+import { logger } from "../logger";
 
 const router = Router();
 const loginRateLimiter = createRateLimiter({
@@ -30,11 +31,32 @@ router.post("/login", loginRateLimiter, validateBody(authLoginSchema), async (re
       return res.status(400).json({ error: "Username and password required" });
     }
 
+    // Brute-force lockout: block if ≥5 failures in last 30 minutes for this username
+    try {
+      const [{ count: failCount }] = await sql<{ count: string }[]>`
+        SELECT COUNT(*)::text AS count
+        FROM public.login_attempts
+        WHERE username = ${username}
+          AND success = FALSE
+          AND attempted_at > NOW() - INTERVAL '30 minutes'
+      `;
+      if (parseInt(failCount, 10) >= 5) {
+        return res.status(429).json({ error: "Account temporarily locked. Try again later." });
+      }
+    } catch (_lockoutErr) {
+      // Table may not exist yet (pending migration) — skip lockout check, don't crash
+    }
+
     const [user] = await sql<{ id: string; username: string; password_hash: string }[]>`
       SELECT id, username, password_hash FROM public.users WHERE username = ${username}
     `;
 
     if (!user || !(await bcrypt.compare(password, user.password_hash))) {
+      try {
+        await sql`INSERT INTO public.login_attempts (username, success) VALUES (${username}, false)`;
+      } catch (_recordErr) {
+        // Non-fatal — don't let attempt logging block the response
+      }
       return res.status(401).json({ error: "Invalid username or password" });
     }
 
@@ -69,11 +91,11 @@ router.post("/login", loginRateLimiter, validateBody(authLoginSchema), async (re
         },
       });
     } catch (auditError) {
-      console.error("Audit log write failed during login:", auditError);
+      logger.error({ err: auditError }, "Audit log write failed during login");
     }
     return res.json({ profile });
   } catch (err) {
-    console.error("Login error:", err);
+    logger.error({ err }, "Login error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -92,7 +114,7 @@ router.get("/me", requireAuth, async (req, res) => {
 
     return res.json({ profile });
   } catch (err) {
-    console.error("Get profile error:", err);
+    logger.error({ err }, "Get profile error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -104,7 +126,7 @@ router.get("/users", requireAuth, requireRole("admin", "accountant"), async (_re
     `;
     return res.json({ users });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

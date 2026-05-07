@@ -6,6 +6,7 @@
 import { Router } from "express";
 import sql from "../db";
 import { requireAuth, requireRole } from "../middleware/auth";
+import { logger } from "../logger";
 
 const router = Router();
 
@@ -47,7 +48,7 @@ router.get("/", requireAuth, requireRole("admin"), async (req, res) => {
 
     return res.json({ logs, total });
   } catch (err: unknown) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: err instanceof Error ? err.message : "Internal server error" });
   }
 });

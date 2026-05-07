@@ -11,6 +11,7 @@ import sql, { asSqlClient, type TransactionClient } from "../db";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { postPayrollJournalEntry, reverseJournalEntry } from "../services/accountingPosting";
 import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
+import { logger } from "../logger";
 
 const router = Router();
 const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : "Internal server error";
@@ -48,7 +49,7 @@ router.get(
       `;
       return res.json({ summary: row });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -108,7 +109,7 @@ router.get(
 
       return res.json({ payroll: rows });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -182,7 +183,7 @@ router.post(
 
       return res.status(201).json({ entry });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -268,7 +269,7 @@ router.patch(
 
       return res.json({ entry });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }

@@ -1,7 +1,9 @@
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import api from "@/lib/api";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   Table,
@@ -11,6 +13,7 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
+import { ChevronLeft, ChevronRight } from "lucide-react";
 import { formatCurrency, formatDate } from "@/utils/format";
 
 interface JournalEntryLine {
@@ -39,18 +42,34 @@ interface JournalEntry {
   lines: JournalEntryLine[];
 }
 
+interface JournalEntriesResponse {
+  data: JournalEntry[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+const PAGE_SIZE = 25;
+
 export function JournalEntriesTab() {
+  const [page, setPage] = useState(0);
+
   const { data, isLoading } = useQuery({
-    queryKey: ["journal-entries"],
+    queryKey: ["journal-entries", page],
     queryFn: () =>
-      api.get<{ entries: JournalEntry[] }>("/accounting/journal-entries?limit=100")
-        .then((response) => response.entries.map((entry) => ({
-          ...entry,
-          is_reversal: entry.entry_number.startsWith("JE-REV") || (typeof entry.source_key === "string" && entry.source_key.includes(":void:")),
-        }))),
+      api.get<JournalEntriesResponse>(`/accounting/journal-entries?page=${page}&page_size=${PAGE_SIZE}`)
+        .then((response) => ({
+          ...response,
+          data: response.data.map((entry) => ({
+            ...entry,
+            is_reversal: entry.entry_number.startsWith("JE-REV") || (typeof entry.source_key === "string" && entry.source_key.includes(":void:")),
+          })),
+        })),
   });
 
-  const entries = data ?? [];
+  const entries = data?.data ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.ceil(total / PAGE_SIZE);
 
   return (
     <Card className="border-border">
@@ -58,6 +77,7 @@ export function JournalEntriesTab() {
         <CardTitle>Journal Entries</CardTitle>
         <CardDescription>
           Auto-posted accounting entries created from sales, invoices, vouchers, and payroll actions.
+          {total > 0 && ` · ${total} total · page ${page + 1} of ${totalPages || 1}`}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -67,7 +87,7 @@ export function JournalEntriesTab() {
           <p className="py-8 text-center text-sm text-muted-foreground">No journal entries found yet.</p>
         ) : (
           <div className="space-y-4">
-            {entries.map((entry) => (
+            {entries.map((entry: JournalEntry) => (
               <div key={entry.id} className="rounded-lg border border-border">
                 <div className="flex flex-wrap items-start justify-between gap-3 border-b border-border px-4 py-3">
                   <div>
@@ -122,6 +142,22 @@ export function JournalEntriesTab() {
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {totalPages > 1 && (
+          <div className="flex items-center justify-between pt-4">
+            <p className="text-xs text-muted-foreground">
+              {total} total · page {page + 1} of {totalPages}
+            </p>
+            <div className="flex gap-1">
+              <Button variant="outline" size="sm" onClick={() => setPage((p) => p - 1)} disabled={page === 0}>
+                <ChevronLeft className="h-4 w-4" />
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setPage((p) => p + 1)} disabled={page >= totalPages - 1}>
+                <ChevronRight className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
         )}
       </CardContent>

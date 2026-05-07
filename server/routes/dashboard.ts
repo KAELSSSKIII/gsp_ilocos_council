@@ -6,6 +6,7 @@
 import { Router } from "express";
 import sql from "../db";
 import { requireAuth, requireRole } from "../middleware/auth";
+import { logger } from "../logger";
 
 const router = Router();
 
@@ -66,7 +67,7 @@ router.get("/", requireAuth, requireRole("admin", "accountant", "manager", "hr")
       teamCount: Number(teamCount[0]?.count ?? 0),
     });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

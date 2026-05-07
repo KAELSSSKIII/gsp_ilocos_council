@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import * as XLSX from "xlsx";
+import { downloadXlsx } from "@/lib/xlsxExport";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import {
@@ -83,8 +83,8 @@ export function OverviewTab({ year }: { year: number }) {
 
   const { orgName, councilName } = readBusinessSettings();
 
-  const exportExcel = () => {
-    const header = [
+  const exportExcel = async () => {
+    const data = [
       [`${orgName} — ${councilName}`],
       [`Accounting Overview — ${year}`],
       [],
@@ -106,11 +106,10 @@ export function OverviewTab({ year }: { year: number }) {
       ["Type", "Amount"],
       ...expenseBreakdown.map((d) => [d.name, d.value]),
     ];
-    const ws = XLSX.utils.aoa_to_sheet(header);
-    ws["!cols"] = [{ wch: 36 }, { wch: 18 }, { wch: 18 }, { wch: 18 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Overview");
-    XLSX.writeFile(wb, `accounting-overview-${year}.xlsx`);
+    await downloadXlsx(
+      [{ name: "Overview", data, colWidths: [36, 18, 18, 18] }],
+      `accounting-overview-${year}.xlsx`,
+    );
   };
 
   const allBreakdown = [

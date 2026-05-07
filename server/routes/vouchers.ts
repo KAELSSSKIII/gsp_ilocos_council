@@ -12,6 +12,7 @@ import { validateBody } from "../middleware/validate";
 import { postVoucherJournalEntry, reverseJournalEntry } from "../services/accountingPosting";
 import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
 import { voucherCreateSchema, voucherUpdateSchema } from "../validation/schemas";
+import { logger } from "../logger";
 
 const router = Router();
 const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : "Internal server error";
@@ -24,53 +25,33 @@ router.get(
   async (req, res) => {
     try {
       const { status, type } = req.query as Record<string, string>;
+      const page      = Math.max(0, parseInt((req.query.page as string) ?? "0", 10) || 0);
+      const page_size = Math.min(Math.max(1, parseInt((req.query.page_size as string) ?? "25", 10) || 25), 100);
+      const offset    = page * page_size;
 
-      let rows;
-      if (status && type) {
-        rows = await sql`
-          SELECT v.*, p.full_name AS created_by_name,
-                 a.full_name AS approved_by_name
-          FROM public.vouchers v
-          LEFT JOIN public.profiles p ON p.id = v.created_by
-          LEFT JOIN public.profiles a ON a.id = v.approved_by
-          WHERE v.status = ${status} AND v.voucher_type = ${type}
-          ORDER BY v.created_at DESC
-        `;
-      } else if (status) {
-        rows = await sql`
-          SELECT v.*, p.full_name AS created_by_name,
-                 a.full_name AS approved_by_name
-          FROM public.vouchers v
-          LEFT JOIN public.profiles p ON p.id = v.created_by
-          LEFT JOIN public.profiles a ON a.id = v.approved_by
-          WHERE v.status = ${status}
-          ORDER BY v.created_at DESC
-        `;
-      } else if (type) {
-        rows = await sql`
-          SELECT v.*, p.full_name AS created_by_name,
-                 a.full_name AS approved_by_name
-          FROM public.vouchers v
-          LEFT JOIN public.profiles p ON p.id = v.created_by
-          LEFT JOIN public.profiles a ON a.id = v.approved_by
-          WHERE v.voucher_type = ${type}
-          ORDER BY v.created_at DESC
-        `;
-      } else {
-        rows = await sql`
-          SELECT v.*, p.full_name AS created_by_name,
-                 a.full_name AS approved_by_name
-          FROM public.vouchers v
-          LEFT JOIN public.profiles p ON p.id = v.created_by
-          LEFT JOIN public.profiles a ON a.id = v.approved_by
-          ORDER BY v.created_at DESC
-          LIMIT 200
-        `;
-      }
+      const [countRow] = await sql<{ total: string }[]>`
+        SELECT COUNT(*)::text AS total
+        FROM public.vouchers v
+        WHERE (${status ?? null}::text IS NULL OR v.status = ${status ?? null})
+          AND (${type ?? null}::text IS NULL OR v.voucher_type = ${type ?? null})
+      `;
+      const total = parseInt(countRow.total, 10);
 
-      return res.json({ vouchers: rows });
+      const rows = await sql`
+        SELECT v.*, p.full_name AS created_by_name,
+               a.full_name AS approved_by_name
+        FROM public.vouchers v
+        LEFT JOIN public.profiles p ON p.id = v.created_by
+        LEFT JOIN public.profiles a ON a.id = v.approved_by
+        WHERE (${status ?? null}::text IS NULL OR v.status = ${status ?? null})
+          AND (${type ?? null}::text IS NULL OR v.voucher_type = ${type ?? null})
+        ORDER BY v.created_at DESC
+        LIMIT ${page_size} OFFSET ${offset}
+      `;
+
+      return res.json({ data: rows, total, page, page_size });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -124,7 +105,7 @@ router.post(
 
       return res.status(201).json({ voucher });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -178,7 +159,7 @@ router.patch(
         if (updatedVoucher && currentVoucher.status === "posted" && status !== "posted") {
           await reverseJournalEntry(asSqlClient(tx), {
             sourceKey: `voucher:posted:${updatedVoucher.id}`,
-            reverseSourceKey: `voucher:reversed:${updatedVoucher.id}:${status}`,
+            reverseSourceKey: `voucher:reversed:${updatedVoucher.id}`,
             referenceType: "voucher",
             referenceId: updatedVoucher.id,
             entryDate: new Date().toISOString().slice(0, 10),
@@ -210,7 +191,7 @@ router.patch(
       if (err instanceof Error && err.message === "POSTED_VOUCHER_LOCKED") {
         return res.status(409).json({ error: "Posted vouchers are locked. Cancel the voucher to reverse it." });
       }
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }

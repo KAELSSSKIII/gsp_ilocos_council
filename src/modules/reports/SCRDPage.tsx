@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, useEffect, useRef } from "react";
 import { useQuery, useMutation } from "@tanstack/react-query";
-import * as XLSX from "xlsx";
+import { downloadXlsx } from "@/lib/xlsxExport";
 import api from "@/lib/api";
 import { readBusinessSettings } from "@/utils/businessSettings";
 import { Button } from "@/components/ui/button";
@@ -531,18 +531,17 @@ export function SCRDPage() {
       bankAccount1, bankAccount2, bankAccount3, bankAccount4, bankAccount5]);
 
   // ── Excel export ───────────────────────────────────────────────────────────
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const header = [
       [orgName.toUpperCase()],[regionName.toUpperCase()],[councilName.toUpperCase()],[""],
       ["STATEMENT OF CASH RECEIPTS & DISBURSEMENTS"],
       [`For the Month Ended, ${monthLabel} ${year}`],[""],
       ["Description","Amount","Sub-total / Total"],
     ];
-    const ws = XLSX.utils.aoa_to_sheet([...header, ...buildRows()]);
-    ws["!cols"] = [{ wch: 60 }, { wch: 18 }, { wch: 18 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "SCRD");
-    XLSX.writeFile(wb, `SCRD-${monthLabel}-${year}.xlsx`);
+    await downloadXlsx(
+      [{ name: "SCRD", data: [...header, ...buildRows()], colWidths: [60, 18, 18] }],
+      `SCRD-${monthLabel}-${year}.xlsx`,
+    );
   };
 
   // ── PDF export ─────────────────────────────────────────────────────────────

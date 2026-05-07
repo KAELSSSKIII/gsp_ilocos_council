@@ -10,6 +10,7 @@ import { Router } from "express";
 import sql, { asSqlClient, type TransactionClient } from "../db";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { postRentalBalancePaymentJournalEntry } from "../services/accountingPosting";
+import { logger } from "../logger";
 
 const router = Router();
 const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : "Internal server error";
@@ -41,7 +42,7 @@ router.get("/spaces", requireAuth, requireRole("admin", "cashier", "accountant")
     if (isMissingRelationError(err)) {
       return res.json({ spaces: [] });
     }
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -67,7 +68,7 @@ router.get("/bookings", requireAuth, requireRole("admin", "cashier", "accountant
     if (isMissingRelationError(err)) {
       return res.json({ bookings: [] });
     }
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -109,7 +110,7 @@ router.post("/check", requireAuth, requireRole("admin", "cashier"), async (req, 
 
     return res.json({ available: true, conflicts: [] });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -141,7 +142,7 @@ router.post("/bookings", requireAuth, requireRole("admin", "cashier"), async (re
     const inserted = await sql`INSERT INTO public.rental_bookings ${sql(rows)} RETURNING *`;
     return res.status(201).json({ bookings: inserted });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -217,7 +218,7 @@ router.post("/bookings/:id/pay-balance", requireAuth, requireRole("admin", "cash
     if (err instanceof Error && err.message === "BOOKING_NOT_FOUND") {
       return res.status(404).json({ error: "Booking not found" });
     }
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: getErrorMessage(err) });
   }
 });
@@ -243,7 +244,7 @@ router.patch("/bookings/:id", requireAuth, requireRole("admin", "cashier"), asyn
     if (!booking) return res.status(404).json({ error: "Booking not found" });
     return res.json({ booking });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -259,7 +260,7 @@ router.patch("/bookings/by-sale/:saleId", requireAuth, requireRole("admin", "cas
     `;
     return res.json({ success: true });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

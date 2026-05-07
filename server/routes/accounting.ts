@@ -10,6 +10,7 @@ import { requireAuth, requireRole } from "../middleware/auth";
 import { validateBody } from "../middleware/validate";
 import { postManualJournalEntry } from "../services/accountingPosting";
 import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
+import { logger } from "../logger";
 import {
   accountingMappingsUpdateSchema,
   manualJournalEntryCreateSchema,
@@ -141,7 +142,7 @@ router.get(
 
       return res.json({ mappings });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -193,7 +194,7 @@ router.put(
 
       return res.json({ success: true });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -267,7 +268,7 @@ router.post(
       if (message === "JOURNAL_ENTRY_UNBALANCED") {
         return res.status(400).json({ error: "Journal entry must balance before posting" });
       }
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: message });
     }
   }
@@ -279,7 +280,14 @@ router.get(
   requireRole("admin", "accountant"),
   async (req, res) => {
     try {
-      const limit = Math.min(parseInt((req.query.limit as string) ?? "100", 10) || 100, 200);
+      const page      = Math.max(0, parseInt((req.query.page as string) ?? "0", 10) || 0);
+      const page_size = Math.min(Math.max(1, parseInt((req.query.page_size as string) ?? "25", 10) || 25), 100);
+      const offset    = page * page_size;
+
+      const [countRow] = await sql<{ total: string }[]>`
+        SELECT COUNT(*)::text AS total FROM public.journal_entries
+      `;
+      const total = parseInt(countRow.total, 10);
 
       const entries = await sql`
         SELECT
@@ -313,12 +321,12 @@ router.get(
         LEFT JOIN public.chart_of_accounts coa ON coa.id = jel.account_id
         GROUP BY je.id
         ORDER BY je.entry_date DESC, je.created_at DESC
-        LIMIT ${limit}
+        LIMIT ${page_size} OFFSET ${offset}
       `;
 
-      return res.json({ entries });
+      return res.json({ data: entries, total, page, page_size });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -355,6 +363,7 @@ router.get(
           AND je.entry_date <= ${to}
           AND (${accountId}::uuid IS NULL OR coa.id = ${accountId}::uuid)
         ORDER BY je.entry_date ASC, je.created_at ASC, jel.line_number ASC
+        LIMIT 2000
       `;
 
       let balance = 0;
@@ -371,7 +380,7 @@ router.get(
 
       return res.json({ ledger });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -428,7 +437,7 @@ router.get(
         totals,
       });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -494,7 +503,7 @@ router.get(
         },
       });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -616,7 +625,7 @@ router.get(
         ].filter((d) => d.value > 0),
       });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -744,7 +753,7 @@ router.get(
         netIncome: totalIncome - totalExpenses,
       });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }

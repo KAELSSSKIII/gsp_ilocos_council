@@ -819,3 +819,14 @@ CREATE TABLE IF NOT EXISTS public.scrd_reports (
   created_by  UUID REFERENCES public.profiles(id),
   created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+
+-- ─── LOGIN ATTEMPTS TABLE (brute-force lockout) ────────────────────────────────
+CREATE TABLE IF NOT EXISTS public.login_attempts (
+  id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  username     TEXT NOT NULL,
+  attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  success      BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE INDEX IF NOT EXISTS idx_login_attempts_username
+  ON public.login_attempts (username, attempted_at);

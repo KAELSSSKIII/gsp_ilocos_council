@@ -13,6 +13,7 @@ import sql from "../db";
 import { requireAuth, requireRole } from "../middleware/auth";
 import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate";
+import { logger } from "../logger";
 import {
   categoryCreateSchema,
   categoryUpdateSchema,
@@ -107,7 +108,7 @@ router.get("/", requireAuth, validateQuery(productsListQuerySchema), async (req,
     `;
     return res.json({ products, page, pageSize, total: count });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -162,7 +163,7 @@ router.get("/all", requireAuth, requireRole("admin", "accountant", "cashier", "i
     `;
     return res.json({ products, page, pageSize, total: count });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -203,7 +204,7 @@ router.post("/", requireAuth, requireRole("admin", "accountant"), validateBody(p
 
     return res.status(201).json({ product });
   } catch (err: unknown) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     if (
       typeof err === "object" &&
       err !== null &&
@@ -306,7 +307,7 @@ router.patch("/:id", requireAuth, requireRole("admin", "accountant", "inventory_
 
     return res.json({ product });
   } catch (err: unknown) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     if (
       typeof err === "object" &&
       err !== null &&
@@ -353,7 +354,7 @@ router.get("/stock-adjustments", requireAuth, requireRole("admin", "accountant",
     if (typeof err === "object" && err !== null && "code" in err && (err as { code: string }).code === "42P01") {
       return res.json({ adjustments: [], total: 0 });
     }
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -375,7 +376,7 @@ router.get("/:id/adjustments", requireAuth, requireRole("admin", "accountant", "
     if (typeof err === "object" && err !== null && "code" in err && err.code === "42P01") {
       return res.json({ adjustments: [] });
     }
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -400,7 +401,7 @@ router.get("/categories", requireAuth, async (req, res) => {
         `;
     return res.json({ categories });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -428,7 +429,7 @@ router.post("/categories", requireAuth, requireRole("admin"), validateBody(categ
 
     return res.status(201).json({ category });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -473,7 +474,7 @@ router.patch("/categories/:id", requireAuth, requireRole("admin"), validateParam
 
     return res.json({ category });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -511,7 +512,7 @@ router.delete("/categories/:id", requireAuth, requireRole("admin"), validatePara
     await sql`DELETE FROM public.product_categories WHERE id = ${req.params.id}`;
     return res.json({ success: true });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

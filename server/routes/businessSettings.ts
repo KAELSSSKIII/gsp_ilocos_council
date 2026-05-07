@@ -6,6 +6,7 @@ import { requireAuth, requireRole } from "../middleware/auth";
 import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
 import { validateBody } from "../middleware/validate";
 import { businessSettingsSchema } from "../validation/schemas";
+import { logger } from "../logger";
 
 const router = Router();
 
@@ -87,10 +88,10 @@ router.get("/", requireAuth, async (_req, res) => {
     const code = (err as { code?: string })?.code ?? "";
     // Also handle permission errors or any other DB-level issue by returning defaults
     if (code.startsWith("4") || code.startsWith("5")) {
-      console.warn("[business-settings] DB error, returning defaults:", code);
+      logger.warn({ code }, "[business-settings] DB error, returning defaults");
       return res.json({ settings: null, defaults: DEFAULT_SETTINGS });
     }
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -249,7 +250,7 @@ router.put(
         },
       });
     } catch (err) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: "Internal server error" });
     }
   }

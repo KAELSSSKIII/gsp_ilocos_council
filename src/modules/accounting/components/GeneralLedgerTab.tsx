@@ -72,6 +72,8 @@ export function GeneralLedgerTab() {
   const accounts = (accountsData ?? []).filter((account) => account.is_active);
   const ledger = data ?? [];
 
+  const hitLimit = ledger.length === 2000;
+
   const filtered = ledger.filter((r) => {
     const matchType = typeFilter === "all" || r.entry_type === typeFilter;
     const q = search.toLowerCase();
@@ -190,6 +192,11 @@ export function GeneralLedgerTab() {
           </div>
         </CardHeader>
         <CardContent>
+          {hitLimit && (
+            <p className="mb-3 text-xs text-amber-600 text-center">
+              Showing first 2,000 entries. Narrow the date range to see more.
+            </p>
+          )}
           {isLoading ? (
             <p className="text-sm text-muted-foreground py-6 text-center">Loading…</p>
           ) : paginated.length === 0 ? (

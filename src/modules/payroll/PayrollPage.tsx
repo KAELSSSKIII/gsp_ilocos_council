@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import * as XLSX from "xlsx";
+import { downloadXlsx } from "@/lib/xlsxExport";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -175,7 +175,7 @@ export function PayrollPage() {
   const periodLabel = `${MONTHS[month - 1]} ${year}`;
   const { orgName, councilName } = readBusinessSettings();
 
-  const exportExcel = () => {
+  const exportExcel = async () => {
     if (entries.length === 0) { toast.error("No payroll entries to export."); return; }
     const header = [
       [`${orgName} — ${councilName}`],
@@ -214,12 +214,10 @@ export function PayrollPage() {
       entries.reduce((s, e) => s + Number(e.net_salary), 0),
       "",
     ];
-    const ws = XLSX.utils.aoa_to_sheet([...header, ...rows, [], totRow]);
-    ws["!cols"] = [{ wch: 4 }, { wch: 26 }, { wch: 20 }, { wch: 24 },
-      ...Array(10).fill({ wch: 14 }), { wch: 10 }];
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Payroll");
-    XLSX.writeFile(wb, `payroll-${year}-${String(month).padStart(2, "0")}.xlsx`);
+    await downloadXlsx(
+      [{ name: "Payroll", data: [...header, ...rows, [], totRow], colWidths: [4, 26, 20, 24, ...Array(10).fill(14), 10] }],
+      `payroll-${year}-${String(month).padStart(2, "0")}.xlsx`,
+    );
   };
 
   const exportPDF = async () => {

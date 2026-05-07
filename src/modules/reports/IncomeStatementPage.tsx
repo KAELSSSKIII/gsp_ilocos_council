@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import * as XLSX from "xlsx";
+import { downloadXlsx } from "@/lib/xlsxExport";
 import { useQuery } from "@tanstack/react-query";
 import { format, endOfMonth, startOfMonth } from "date-fns";
 import {
@@ -199,8 +199,7 @@ export function IncomeStatementPage() {
     ? `Statement of Income — ${cashierLabel} — ${monthLabel}`
     : `Statement of Income — ${monthLabel}`;
 
-  const generateExcel = () => {
-    const wb = XLSX.utils.book_new();
+  const generateExcel = async () => {
     const rows: Array<Array<string | number>> = [
       [orgLabel],
       ["Income Statement"],
@@ -233,10 +232,11 @@ export function IncomeStatementPage() {
 
     rows.push([], ["Income Tax", "₱0.00 — Tax-exempt (non-stock, non-profit · RA 7278)"]);
 
-    const ws = XLSX.utils.aoa_to_sheet(rows);
-    XLSX.utils.book_append_sheet(wb, ws, "Income Statement");
     const suffix = isCashierFiltered ? `-${cashierLabel.replace(/\s+/g, "_")}` : "";
-    XLSX.writeFile(wb, `income-statement-${selectedMonth}${suffix}.xlsx`);
+    await downloadXlsx(
+      [{ name: "Income Statement", data: rows }],
+      `income-statement-${selectedMonth}${suffix}.xlsx`,
+    );
   };
 
   const generatePDF = async () => {

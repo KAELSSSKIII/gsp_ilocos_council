@@ -15,6 +15,7 @@ import {
   reverseJournalEntry,
 } from "../services/accountingPosting";
 import { invoiceCreateSchema, invoiceUpdateSchema } from "../validation/schemas";
+import { logger } from "../logger";
 
 const router = Router();
 const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : "Internal server error";
@@ -27,6 +28,9 @@ router.get(
   async (req, res) => {
     try {
       const { status, from, to } = req.query as Record<string, string>;
+      const page      = Math.max(0, parseInt((req.query.page as string) ?? "0", 10) || 0);
+      const page_size = Math.min(Math.max(1, parseInt((req.query.page_size as string) ?? "25", 10) || 25), 100);
+      const offset    = page * page_size;
 
       // Auto-mark overdue: sent invoices past due_date
       await sql`
@@ -35,87 +39,39 @@ router.get(
         WHERE status = 'sent' AND due_date < CURRENT_DATE
       `;
 
-      let rows;
+      const [countRow] = await sql<{ total: string }[]>`
+        SELECT COUNT(*)::text AS total
+        FROM public.invoices i
+        WHERE (${status ?? null}::text IS NULL OR i.status = ${status ?? null})
+          AND (${from ?? null}::text IS NULL OR i.issue_date >= ${from ?? null})
+          AND (${to ?? null}::text IS NULL OR i.issue_date <= ${to ?? null})
+      `;
+      const total = parseInt(countRow.total, 10);
 
-      if (status && from && to) {
-        rows = await sql`
-          SELECT i.*,
-            COALESCE(
-              json_agg(
-                json_build_object(
-                  'id', ii.id, 'description', ii.description,
-                  'quantity', ii.quantity, 'unit_price', ii.unit_price, 'amount', ii.amount
-                ) ORDER BY ii.created_at
-              ) FILTER (WHERE ii.id IS NOT NULL),
-              '[]'::json
-            ) AS items
-          FROM public.invoices i
-          LEFT JOIN public.invoice_items ii ON ii.invoice_id = i.id
-          WHERE i.status = ${status}
-            AND i.issue_date >= ${from}
-            AND i.issue_date <= ${to}
-          GROUP BY i.id
-          ORDER BY i.created_at DESC
-        `;
-      } else if (status) {
-        rows = await sql`
-          SELECT i.*,
-            COALESCE(
-              json_agg(
-                json_build_object(
-                  'id', ii.id, 'description', ii.description,
-                  'quantity', ii.quantity, 'unit_price', ii.unit_price, 'amount', ii.amount
-                ) ORDER BY ii.created_at
-              ) FILTER (WHERE ii.id IS NOT NULL),
-              '[]'::json
-            ) AS items
-          FROM public.invoices i
-          LEFT JOIN public.invoice_items ii ON ii.invoice_id = i.id
-          WHERE i.status = ${status}
-          GROUP BY i.id
-          ORDER BY i.created_at DESC
-        `;
-      } else if (from && to) {
-        rows = await sql`
-          SELECT i.*,
-            COALESCE(
-              json_agg(
-                json_build_object(
-                  'id', ii.id, 'description', ii.description,
-                  'quantity', ii.quantity, 'unit_price', ii.unit_price, 'amount', ii.amount
-                ) ORDER BY ii.created_at
-              ) FILTER (WHERE ii.id IS NOT NULL),
-              '[]'::json
-            ) AS items
-          FROM public.invoices i
-          LEFT JOIN public.invoice_items ii ON ii.invoice_id = i.id
-          WHERE i.issue_date >= ${from} AND i.issue_date <= ${to}
-          GROUP BY i.id
-          ORDER BY i.created_at DESC
-        `;
-      } else {
-        rows = await sql`
-          SELECT i.*,
-            COALESCE(
-              json_agg(
-                json_build_object(
-                  'id', ii.id, 'description', ii.description,
-                  'quantity', ii.quantity, 'unit_price', ii.unit_price, 'amount', ii.amount
-                ) ORDER BY ii.created_at
-              ) FILTER (WHERE ii.id IS NOT NULL),
-              '[]'::json
-            ) AS items
-          FROM public.invoices i
-          LEFT JOIN public.invoice_items ii ON ii.invoice_id = i.id
-          GROUP BY i.id
-          ORDER BY i.created_at DESC
-          LIMIT 200
-        `;
-      }
+      const rows = await sql`
+        SELECT i.*,
+          COALESCE(
+            json_agg(
+              json_build_object(
+                'id', ii.id, 'description', ii.description,
+                'quantity', ii.quantity, 'unit_price', ii.unit_price, 'amount', ii.amount
+              ) ORDER BY ii.created_at
+            ) FILTER (WHERE ii.id IS NOT NULL),
+            '[]'::json
+          ) AS items
+        FROM public.invoices i
+        LEFT JOIN public.invoice_items ii ON ii.invoice_id = i.id
+        WHERE (${status ?? null}::text IS NULL OR i.status = ${status ?? null})
+          AND (${from ?? null}::text IS NULL OR i.issue_date >= ${from ?? null})
+          AND (${to ?? null}::text IS NULL OR i.issue_date <= ${to ?? null})
+        GROUP BY i.id
+        ORDER BY i.created_at DESC
+        LIMIT ${page_size} OFFSET ${offset}
+      `;
 
-      return res.json({ invoices: rows });
+      return res.json({ data: rows, total, page, page_size });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -192,7 +148,7 @@ router.post(
 
       return res.status(201).json({ invoice });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -257,7 +213,7 @@ router.patch(
         ) {
           await reverseJournalEntry(asSqlClient(tx), {
             sourceKey: `invoice:issued:${updatedInvoice.id}`,
-            reverseSourceKey: `invoice:issued-reversed:${updatedInvoice.id}:${status}`,
+            reverseSourceKey: `invoice:issued-reversed:${updatedInvoice.id}`,
             referenceType: "invoice",
             referenceId: updatedInvoice.id,
             entryDate: currentInvoice.issue_date,
@@ -270,7 +226,7 @@ router.patch(
         if (currentInvoice.status === "paid" && status !== "paid") {
           await reverseJournalEntry(asSqlClient(tx), {
             sourceKey: `invoice:paid:${updatedInvoice.id}`,
-            reverseSourceKey: `invoice:paid-reversed:${updatedInvoice.id}:${status}`,
+            reverseSourceKey: `invoice:paid-reversed:${updatedInvoice.id}`,
             referenceType: "invoice",
             referenceId: updatedInvoice.id,
             entryDate: currentInvoice.issue_date,
@@ -285,7 +241,7 @@ router.patch(
       if (!invoice) return res.status(404).json({ error: "Invoice not found" });
       return res.json({ invoice });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }

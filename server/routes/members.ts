@@ -12,6 +12,7 @@ import { requireAuth, requireRole } from "../middleware/auth";
 import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
 import { validateBody, validateParams } from "../middleware/validate";
 import { idParamSchema, memberCreateSchema, memberUpdateSchema } from "../validation/schemas";
+import { logger } from "../logger";
 
 const router = Router();
 
@@ -25,7 +26,7 @@ router.get("/", requireAuth, requireRole("admin", "cashier", "accountant"), asyn
     `;
     return res.json({ members });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -55,7 +56,7 @@ router.post("/", requireAuth, requireRole("admin", "cashier"), validateBody(memb
 
     return res.status(201).json({ member });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -101,7 +102,7 @@ router.patch("/:id", requireAuth, requireRole("admin", "cashier"), validateParam
 
     return res.json({ member });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -132,7 +133,7 @@ router.delete("/:id", requireAuth, requireRole("admin"), validateParams(idParamS
     await sql`DELETE FROM public.members WHERE id = ${req.params.id}`;
     return res.json({ success: true });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

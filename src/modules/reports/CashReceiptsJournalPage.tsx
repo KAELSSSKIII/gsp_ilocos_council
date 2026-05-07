@@ -1,7 +1,7 @@
 import { useState, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
-import * as XLSX from "xlsx";
+import { downloadXlsx } from "@/lib/xlsxExport";
 import api from "@/lib/api";
 import { readBusinessSettings } from "@/utils/businessSettings";
 import { Button } from "@/components/ui/button";
@@ -72,7 +72,7 @@ function zeroRow(): ReceiptRow {
 }
 
 // ─── XLSX Export ─────────────────────────────────────────────────────────────
-function exportXLSX(rows: ReceiptRow[], year: number, month: number, settings: ReturnType<typeof readBusinessSettings>) {
+async function exportXLSX(rows: ReceiptRow[], year: number, month: number, settings: ReturnType<typeof readBusinessSettings>) {
   const HEADERS = [
     "DATE","PAYOR","PARTICULARS","SI #","PURPOSE","DATE DEPOSITED","CASH ON HAND",
     `${settings.bankAccount3} (DR)`,
@@ -113,11 +113,11 @@ function exportXLSX(rows: ReceiptRow[], year: number, month: number, settings: R
     totalsRow,
   ];
 
-  const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ws["!cols"] = HEADERS.map((_, i) => ({ wch: i < 7 ? (i === 2 ? 40 : 16) : 14 }));
-  const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, ws, "Cash Receipts");
-  XLSX.writeFile(wb, `cash-receipts-${year}-${String(month).padStart(2,"0")}.xlsx`);
+  const colWidths = HEADERS.map((_, i) => i < 7 ? (i === 2 ? 40 : 16) : 14);
+  await downloadXlsx(
+    [{ name: "Cash Receipts", data: aoa, colWidths }],
+    `cash-receipts-${year}-${String(month).padStart(2, "0")}.xlsx`,
+  );
 }
 
 // ─── Main Page ────────────────────────────────────────────────────────────────

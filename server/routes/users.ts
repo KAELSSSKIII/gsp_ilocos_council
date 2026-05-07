@@ -14,6 +14,7 @@ import { requireAuth, requireRole } from "../middleware/auth";
 import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
 import { validateBody, validateParams } from "../middleware/validate";
 import { idParamSchema, userCreateSchema, userUpdateSchema } from "../validation/schemas";
+import { logger } from "../logger";
 
 const router = Router();
 
@@ -50,7 +51,7 @@ router.get("/", requireAuth, requireRole(...ROUTE_ROLE_ACCESS.userCrud), async (
     `;
     return res.json({ users });
   } catch (err: unknown) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: err instanceof Error ? err.message : "Internal server error" });
   }
 });
@@ -117,7 +118,7 @@ router.post("/", requireAuth, requireRole(...ROUTE_ROLE_ACCESS.userCrud), valida
 
     return res.status(201).json({ user: profile });
   } catch (err: unknown) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: err instanceof Error ? err.message : "Internal server error" });
   }
 });
@@ -187,7 +188,7 @@ router.patch("/:id", requireAuth, requireRole(...ROUTE_ROLE_ACCESS.userCrud), va
 
     return res.json({ user: updated });
   } catch (err: unknown) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: err instanceof Error ? err.message : "Internal server error" });
   }
 });
@@ -232,7 +233,7 @@ router.delete("/:id", requireAuth, requireRole(...ROUTE_ROLE_ACCESS.userCrud), v
 
     return res.status(204).send();
   } catch (err: unknown) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: err instanceof Error ? err.message : "Internal server error" });
   }
 });
@@ -270,7 +271,7 @@ router.get("/audit-trail", requireAuth, requireRole(...ROUTE_ROLE_ACCESS.userCru
 
     return res.json({ entries });
   } catch (err: unknown) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: err instanceof Error ? err.message : "Internal server error" });
   }
 });

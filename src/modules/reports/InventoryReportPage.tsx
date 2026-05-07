@@ -4,7 +4,7 @@ import api from "@/lib/api";
 import { readBusinessSettings } from "@/utils/businessSettings";
 import { formatCurrencyForPdf } from "@/utils/format";
 import { format } from "date-fns";
-import * as XLSX from "xlsx";
+import { downloadXlsx } from "@/lib/xlsxExport";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -388,7 +388,6 @@ export function InventoryReportPage({ embedded = false }: { embedded?: boolean }
         totalValue: exportRows.reduce((acc, row) => acc + row.stock * row.price, 0),
       };
 
-      const wb = XLSX.utils.book_new();
       const headers = ["Item Name", "Category", "Stock", "Unit Price (PHP)", "Total Value (PHP)"];
       const dataRows = exportRows.map((row) => [
         row.name,
@@ -405,7 +404,7 @@ export function InventoryReportPage({ embedded = false }: { embedded?: boolean }
         ["Total Value (PHP)", exportTotals.totalValue],
       ];
 
-      const ws = XLSX.utils.aoa_to_sheet([
+      const sheetData = [
         [`${readBusinessSettings().orgName} — ${readBusinessSettings().councilName}`],
         ["Inventory Report"],
         [`Generated: ${format(new Date(), "MMMM d, yyyy h:mm a")}`],
@@ -416,10 +415,12 @@ export function InventoryReportPage({ embedded = false }: { embedded?: boolean }
         headers,
         ...dataRows,
         ...summaryRows,
-      ]);
+      ];
 
-      XLSX.utils.book_append_sheet(wb, ws, "Inventory");
-      XLSX.writeFile(wb, `inventory-report-${format(new Date(), "yyyyMMdd-HHmm")}.xlsx`);
+      await downloadXlsx(
+        [{ name: "Inventory", data: sheetData }],
+        `inventory-report-${format(new Date(), "yyyyMMdd-HHmm")}.xlsx`,
+      );
     } catch (error) {
       if (import.meta.env.DEV) console.error(error);
       toast.error("Failed to export Excel. Please try again.");

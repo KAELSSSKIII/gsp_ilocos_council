@@ -12,6 +12,7 @@ import sql from "../db";
 import { requireAuth } from "../middleware/auth";
 import { validateBody } from "../middleware/validate";
 import { activeCartCreateSchema } from "../validation/schemas";
+import { logger } from "../logger";
 
 const router = Router();
 
@@ -47,7 +48,7 @@ router.get("/active", requireAuth, async (req, res) => {
 
     return res.json({ cart, items });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -63,7 +64,7 @@ router.post("/active", requireAuth, validateBody(activeCartCreateSchema), async 
     `;
     return res.status(201).json({ cart });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -81,7 +82,7 @@ router.delete("/active/:id/items", requireAuth, async (req, res) => {
     await sql`DELETE FROM public.active_cart_items WHERE active_cart_id = ${req.params.id}`;
     return res.status(204).send();
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -95,7 +96,7 @@ router.delete("/active/:id", requireAuth, async (req, res) => {
     `;
     return res.status(204).send();
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -123,7 +124,7 @@ router.post("/active/:id/items", requireAuth, async (req, res) => {
     await sql`INSERT INTO public.active_cart_items ${sql(rows)}`;
     return res.status(201).json({ inserted: rows.length });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

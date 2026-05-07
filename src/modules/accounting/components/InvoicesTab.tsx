@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -15,7 +15,7 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Plus, Trash2, CheckCircle2, Send, XCircle } from "lucide-react";
+import { Plus, Trash2, CheckCircle2, Send, XCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import api from "@/lib/api";
 import { formatCurrency } from "@/utils/format";
 
@@ -54,6 +54,7 @@ const STATUS_COLORS: Record<InvoiceStatus, "outline" | "secondary" | "default" |
 };
 
 const BLANK_ITEM: InvoiceItem = { description: "", quantity: 1, unit_price: 0, amount: 0 };
+const PAGE_SIZE = 25;
 
 function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
@@ -61,10 +62,18 @@ function getErrorMessage(error: unknown, fallback: string) {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
+interface InvoicesResponse {
+  data: Invoice[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
 export function InvoicesTab() {
   const qc = useQueryClient();
   const [statusFilter, setStatusFilter] = useState("all");
   const [showDialog,   setShowDialog]   = useState(false);
+  const [page,         setPage]         = useState(0);
 
   // Form state
   const [customerName,  setCustomerName]  = useState("");
@@ -79,14 +88,20 @@ export function InvoicesTab() {
 
   // ── query ──────────────────────────────────────────────────────────────────
   const { data, isLoading } = useQuery({
-    queryKey: ["invoices", statusFilter],
+    queryKey: ["invoices", statusFilter, page],
     queryFn: () => {
-      const url = statusFilter === "all" ? "/invoices" : `/invoices?status=${statusFilter}`;
-      return api.get<{ invoices: Invoice[] }>(url).then((r) => r.invoices);
+      const params = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) });
+      if (statusFilter !== "all") params.set("status", statusFilter);
+      return api.get<InvoicesResponse>(`/invoices?${params}`);
     },
   });
 
-  const invoices = data ?? [];
+  // Reset page when filter changes
+  useEffect(() => { setPage(0); }, [statusFilter]);
+
+  const invoices = data?.data ?? [];
+  const total = data?.total ?? 0;
+  const totalPages = Math.ceil(total / PAGE_SIZE);
 
   // Outstanding total
   const outstanding = invoices
@@ -131,8 +146,8 @@ export function InvoicesTab() {
   const addItem    = () => setItems((p) => [...p, { ...BLANK_ITEM }]);
   const removeItem = (idx: number) => setItems((p) => p.filter((_, i) => i !== idx));
 
-  const subtotal = items.reduce((s, it) => s + it.amount, 0);
-  const total    = subtotal + taxAmount;
+  const subtotal      = items.reduce((s, it) => s + it.amount, 0);
+  const invoiceTotal  = subtotal + taxAmount;
 
   // ── Submit ─────────────────────────────────────────────────────────────────
   const handleCreate = (asDraft = false) => {
@@ -176,7 +191,7 @@ export function InvoicesTab() {
         </Card>
         <Card className="flex-1 min-w-[180px]">
           <CardHeader className="pb-1"><CardDescription className="text-xs">Total Invoices</CardDescription></CardHeader>
-          <CardContent><p className="text-2xl font-bold">{invoices.length}</p></CardContent>
+          <CardContent><p className="text-2xl font-bold">{total}</p></CardContent>
         </Card>
         <div className="flex items-end gap-2 ml-auto">
           <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -209,6 +224,7 @@ export function InvoicesTab() {
           ) : invoices.length === 0 ? (
             <p className="text-sm text-muted-foreground py-6 text-center">No invoices found.</p>
           ) : (
+            <>
             <div className="overflow-x-auto">
               <Table>
                 <TableHeader>
@@ -267,6 +283,23 @@ export function InvoicesTab() {
                 </TableBody>
               </Table>
             </div>
+
+            {totalPages > 1 && (
+              <div className="flex items-center justify-between pt-4">
+                <p className="text-xs text-muted-foreground">
+                  {total} total · page {page + 1} of {totalPages}
+                </p>
+                <div className="flex gap-1">
+                  <Button variant="outline" size="sm" onClick={() => setPage((p) => p - 1)} disabled={page === 0}>
+                    <ChevronLeft className="h-4 w-4" />
+                  </Button>
+                  <Button variant="outline" size="sm" onClick={() => setPage((p) => p + 1)} disabled={page >= totalPages - 1}>
+                    <ChevronRight className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+            )}
+            </>
           )}
         </CardContent>
       </Card>
@@ -351,7 +384,7 @@ export function InvoicesTab() {
               </div>
               <div className="flex gap-4 text-base font-bold">
                 <span className="w-24 text-right">Total:</span>
-                <span className="w-28 text-right text-emerald-600">{formatCurrency(total)}</span>
+                <span className="w-28 text-right text-emerald-600">{formatCurrency(invoiceTotal)}</span>
               </div>
             </div>
 

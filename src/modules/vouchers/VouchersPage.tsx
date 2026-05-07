@@ -17,11 +17,11 @@ import {
   Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
 } from "@/components/ui/select";
 import { toast } from "sonner";
-import { Plus, CheckCircle2, XCircle, FileCheck, FileSpreadsheet, Download } from "lucide-react";
+import { Plus, CheckCircle2, XCircle, FileCheck, FileSpreadsheet, Download, ChevronLeft, ChevronRight } from "lucide-react";
 import api from "@/lib/api";
 import { formatCurrency } from "@/utils/format";
 import { readBusinessSettings } from "@/utils/businessSettings";
-import * as XLSX from "xlsx";
+import { downloadXlsx } from "@/lib/xlsxExport";
 import { format } from "date-fns";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -66,6 +66,15 @@ const TYPE_LABELS: Record<VoucherType, string> = {
   payroll: "Payroll",
 };
 
+interface VouchersResponse {
+  data: Voucher[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+const PAGE_SIZE = 25;
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function VouchersPage() {
@@ -76,23 +85,30 @@ export function VouchersPage() {
   const [formAmount, setFormAmount] = useState(0);
   const [formDesc,   setFormDesc]   = useState("");
   const [formAccountId, setFormAccountId] = useState("");
+  const [pendingPage, setPendingPage] = useState(0);
+  const [allPage,     setAllPage]     = useState(0);
 
   // ── queries ────────────────────────────────────────────────────────────────
   const { data: pendingData, isLoading: loadingPending } = useQuery({
-    queryKey: ["vouchers", "pending"],
+    queryKey: ["vouchers", "pending", pendingPage],
     queryFn: () =>
-      api.get<{ vouchers: Voucher[] }>("/vouchers?status=pending").then((r) => r.vouchers),
+      api.get<VouchersResponse>(`/vouchers?status=pending&page=${pendingPage}&page_size=${PAGE_SIZE}`),
   });
 
   const { data: allData, isLoading: loadingAll } = useQuery({
-    queryKey: ["vouchers", "all"],
+    queryKey: ["vouchers", "all", allPage],
     queryFn: () =>
-      api.get<{ vouchers: Voucher[] }>("/vouchers").then((r) => r.vouchers),
+      api.get<VouchersResponse>(`/vouchers?page=${allPage}&page_size=${PAGE_SIZE}`),
     enabled: tab === "all",
   });
 
-  const pendingVouchers = pendingData ?? [];
-  const allVouchers     = allData ?? [];
+  const pendingVouchers = pendingData?.data ?? [];
+  const pendingTotal    = pendingData?.total ?? 0;
+  const pendingTotalPages = Math.ceil(pendingTotal / PAGE_SIZE);
+
+  const allVouchers   = allData?.data ?? [];
+  const allTotal      = allData?.total ?? 0;
+  const allTotalPages = Math.ceil(allTotal / PAGE_SIZE);
   const { data: accountsData } = useQuery({
     queryKey: ["chart-of-accounts"],
     queryFn: () => api.get<AccountOption[]>("/accounts"),
@@ -178,63 +194,89 @@ export function VouchersPage() {
     </>
   );
 
-  const renderTable = (rows: Voucher[], loading: boolean) =>
-    loading ? (
-      <p className="text-sm text-muted-foreground py-6 text-center">Loading…</p>
-    ) : rows.length === 0 ? (
-      <p className="text-sm text-muted-foreground py-6 text-center">No vouchers found.</p>
-    ) : (
-      <Table>
-        <TableHeader>
-          <TableRow>
-            <TableHead>Voucher #</TableHead>
-            <TableHead>Type</TableHead>
-            <TableHead>Description</TableHead>
-            <TableHead className="text-right">Amount</TableHead>
-            <TableHead>Status</TableHead>
-            <TableHead>Created By</TableHead>
-            <TableHead className="w-[220px] text-right">Actions</TableHead>
-          </TableRow>
-        </TableHeader>
-        <TableBody>
-          {rows.map((v) => (
-            <TableRow key={v.id}>
-              <TableCell className="font-mono text-xs">{v.voucher_number}</TableCell>
-              <TableCell>{TYPE_LABELS[v.voucher_type] ?? v.voucher_type}</TableCell>
-              <TableCell className="max-w-[220px] truncate">{v.description}</TableCell>
-              <TableCell className="text-right">{formatCurrency(v.amount)}</TableCell>
-              <TableCell>
-                <Badge variant={STATUS_COLORS[v.status] ?? "outline"}>{v.status}</Badge>
-              </TableCell>
-              <TableCell>{v.created_by_name ?? "—"}</TableCell>
-              <TableCell>
-                <div className="flex gap-1 justify-end">
-                  {renderActions(v)}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-xs text-slate-500"
-                    onClick={() => exportSingleVoucher(v)}
-                    title="Export voucher slip"
-                  >
-                    <Download className="h-3 w-3 mr-1" /> Slip
-                  </Button>
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    className="text-xs text-slate-500"
-                    onClick={() => exportSingleVoucherExcel(v)}
-                    title="Export voucher as Excel"
-                  >
-                    <FileSpreadsheet className="h-3 w-3 mr-1" /> XLS
-                  </Button>
-                </div>
-              </TableCell>
+  const renderTable = (
+    rows: Voucher[],
+    loading: boolean,
+    total: number,
+    page: number,
+    totalPages: number,
+    setPage: (fn: (p: number) => number) => void,
+  ) => (
+    <>
+      {loading ? (
+        <p className="text-sm text-muted-foreground py-6 text-center">Loading…</p>
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-muted-foreground py-6 text-center">No vouchers found.</p>
+      ) : (
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Voucher #</TableHead>
+              <TableHead>Type</TableHead>
+              <TableHead>Description</TableHead>
+              <TableHead className="text-right">Amount</TableHead>
+              <TableHead>Status</TableHead>
+              <TableHead>Created By</TableHead>
+              <TableHead className="w-[220px] text-right">Actions</TableHead>
             </TableRow>
-          ))}
-        </TableBody>
-      </Table>
-    );
+          </TableHeader>
+          <TableBody>
+            {rows.map((v) => (
+              <TableRow key={v.id}>
+                <TableCell className="font-mono text-xs">{v.voucher_number}</TableCell>
+                <TableCell>{TYPE_LABELS[v.voucher_type] ?? v.voucher_type}</TableCell>
+                <TableCell className="max-w-[220px] truncate">{v.description}</TableCell>
+                <TableCell className="text-right">{formatCurrency(v.amount)}</TableCell>
+                <TableCell>
+                  <Badge variant={STATUS_COLORS[v.status] ?? "outline"}>{v.status}</Badge>
+                </TableCell>
+                <TableCell>{v.created_by_name ?? "—"}</TableCell>
+                <TableCell>
+                  <div className="flex gap-1 justify-end">
+                    {renderActions(v)}
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-xs text-slate-500"
+                      onClick={() => exportSingleVoucher(v)}
+                      title="Export voucher slip"
+                    >
+                      <Download className="h-3 w-3 mr-1" /> Slip
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      className="text-xs text-slate-500"
+                      onClick={() => exportSingleVoucherExcel(v)}
+                      title="Export voucher as Excel"
+                    >
+                      <FileSpreadsheet className="h-3 w-3 mr-1" /> XLS
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      )}
+
+      {totalPages > 1 && (
+        <div className="flex items-center justify-between pt-4">
+          <p className="text-xs text-muted-foreground">
+            {total} total · page {page + 1} of {totalPages}
+          </p>
+          <div className="flex gap-1">
+            <Button variant="outline" size="sm" onClick={() => setPage((p) => p - 1)} disabled={page === 0}>
+              <ChevronLeft className="h-4 w-4" />
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setPage((p) => p + 1)} disabled={page >= totalPages - 1}>
+              <ChevronRight className="h-4 w-4" />
+            </Button>
+          </div>
+        </div>
+      )}
+    </>
+  );
 
   // ── single voucher slip PDF ────────────────────────────────────────────────
   const exportSingleVoucher = async (v: Voucher) => {
@@ -328,38 +370,39 @@ export function VouchersPage() {
     doc.save(`voucher-${v.voucher_number}.pdf`);
   };
 
-  const exportSingleVoucherExcel = (v: Voucher) => {
+  const exportSingleVoucherExcel = async (v: Voucher) => {
     const biz = readBusinessSettings();
-    const ws = XLSX.utils.aoa_to_sheet([
-      [`${biz.orgName} — ${biz.councilName}`],
-      ["VOUCHER"],
-      [],
-      ["Voucher No.",  v.voucher_number],
-      ["Type",         TYPE_LABELS[v.voucher_type] ?? v.voucher_type],
-      ["Date",         format(new Date(v.created_at), "MMMM d, yyyy")],
-      ["Status",       v.status.toUpperCase()],
-      ["Created By",   v.created_by_name ?? "—"],
-      ["Approved By",  v.approved_by_name ?? "—"],
-      [],
-      ["Amount (PHP)", Number(v.amount)],
-      [],
-      ["Description",  v.description],
-      [],
-      [biz.reportPreparedByTitle,  biz.reportPreparedByName],
-      [biz.reportApprovedByTitle, biz.reportApprovedByName],
-      [],
-      [`Generated: ${format(new Date(), "MMMM d, yyyy h:mm a")}`],
-    ]);
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Voucher");
-    XLSX.writeFile(wb, `voucher-${v.voucher_number}.xlsx`);
+    await downloadXlsx(
+      [{ name: "Voucher", data: [
+        [`${biz.orgName} — ${biz.councilName}`],
+        ["VOUCHER"],
+        [],
+        ["Voucher No.",  v.voucher_number],
+        ["Type",         TYPE_LABELS[v.voucher_type] ?? v.voucher_type],
+        ["Date",         format(new Date(v.created_at), "MMMM d, yyyy")],
+        ["Status",       v.status.toUpperCase()],
+        ["Created By",   v.created_by_name ?? "—"],
+        ["Approved By",  v.approved_by_name ?? "—"],
+        [],
+        ["Amount (PHP)", Number(v.amount)],
+        [],
+        ["Description",  v.description],
+        [],
+        [biz.reportPreparedByTitle,  biz.reportPreparedByName],
+        [biz.reportApprovedByTitle, biz.reportApprovedByName],
+        [],
+        [`Generated: ${format(new Date(), "MMMM d, yyyy h:mm a")}`],
+      ] }],
+      `voucher-${v.voucher_number}.xlsx`,
+    );
   };
 
-  // ── exports ────────────────────────────────────────────────────────────────
+  // ── exports ─────────────────────────────────────────────────────────────────
+  // Exports cover the current page only; use "Export Excel" for the full set if needed.
   const exportSource = tab === "pending" ? pendingVouchers : allVouchers;
   const exportLabel  = tab === "pending" ? "Pending Vouchers" : "All Vouchers";
 
-  const handleExportExcel = () => {
+  const handleExportExcel = async () => {
     const headers = ["Voucher #", "Type", "Description", "Amount (₱)", "Status", "Created By", "Date"];
     const rows = exportSource.map((v) => [
       v.voucher_number,
@@ -375,21 +418,20 @@ export function VouchersPage() {
       .filter((v) => v.status === "posted")
       .reduce((s, v) => s + v.amount, 0);
 
-    const ws = XLSX.utils.aoa_to_sheet([
-      [`${readBusinessSettings().orgName} — ${readBusinessSettings().councilName}`],
-      ["Voucher Register"],
-      [`Filter: ${exportLabel}`],
-      [`Generated: ${format(new Date(), "MMMM d, yyyy h:mm a")}`],
-      [],
-      headers,
-      ...rows,
-      [],
-      ["Total Posted (feeds into Operating Expenses)", totalPosted],
-    ]);
-
-    const wb = XLSX.utils.book_new();
-    XLSX.utils.book_append_sheet(wb, ws, "Vouchers");
-    XLSX.writeFile(wb, `vouchers-${format(new Date(), "yyyyMMdd-HHmm")}.xlsx`);
+    await downloadXlsx(
+      [{ name: "Vouchers", data: [
+        [`${readBusinessSettings().orgName} — ${readBusinessSettings().councilName}`],
+        ["Voucher Register"],
+        [`Filter: ${exportLabel}`],
+        [`Generated: ${format(new Date(), "MMMM d, yyyy h:mm a")}`],
+        [],
+        headers,
+        ...rows,
+        [],
+        ["Total Posted (feeds into Operating Expenses)", totalPosted],
+      ] }],
+      `vouchers-${format(new Date(), "yyyyMMdd-HHmm")}.xlsx`,
+    );
   };
 
   const handleExportPdf = async () => {
@@ -488,9 +530,9 @@ export function VouchersPage() {
         <TabsList>
           <TabsTrigger value="pending">
             Pending Approval
-            {pendingVouchers.length > 0 && (
+            {pendingTotal > 0 && (
               <Badge variant="outline" className="ml-2 text-xs">
-                {pendingVouchers.length}
+                {pendingTotal}
               </Badge>
             )}
           </TabsTrigger>
@@ -503,7 +545,7 @@ export function VouchersPage() {
               <CardTitle className="text-card-foreground">Pending Vouchers</CardTitle>
             </CardHeader>
             <CardContent>
-              {renderTable(pendingVouchers, loadingPending)}
+              {renderTable(pendingVouchers, loadingPending, pendingTotal, pendingPage, pendingTotalPages, setPendingPage)}
             </CardContent>
           </Card>
         </TabsContent>
@@ -514,7 +556,7 @@ export function VouchersPage() {
               <CardTitle className="text-card-foreground">All Vouchers</CardTitle>
             </CardHeader>
             <CardContent>
-              {renderTable(allVouchers, loadingAll)}
+              {renderTable(allVouchers, loadingAll, allTotal, allPage, allTotalPages, setAllPage)}
             </CardContent>
           </Card>
         </TabsContent>

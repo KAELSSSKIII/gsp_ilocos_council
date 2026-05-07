@@ -11,6 +11,7 @@ import { requireAuth, requireRole } from "../middleware/auth";
 import { validateBody } from "../middleware/validate";
 import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
 import { employeeCreateSchema, employeeUpdateSchema } from "../validation/schemas";
+import { logger } from "../logger";
 
 const router = Router();
 const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : "Internal server error";
@@ -28,7 +29,7 @@ router.get(
       `;
       return res.json({ employees });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -73,7 +74,7 @@ router.post(
 
       return res.status(201).json({ employee });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -137,7 +138,7 @@ router.patch(
 
       return res.json({ employee });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }

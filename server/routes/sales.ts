@@ -14,6 +14,7 @@ import { requireAuth, requireRole } from "../middleware/auth";
 import { validateBody, validateParams, validateQuery } from "../middleware/validate";
 import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
 import { postSaleJournalEntry, reverseJournalEntry } from "../services/accountingPosting";
+import { logger } from "../logger";
 import {
   idParamSchema,
   receiptVoidMetadataSchema,
@@ -166,7 +167,7 @@ router.get("/", requireAuth, validateQuery(salesQuerySchema), async (req, res) =
 
     return res.json({ sales });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -368,7 +369,7 @@ router.post(
               `;
             });
           } catch (receiptError) {
-            console.warn("Skipping sale receipt snapshot.", receiptError);
+            logger.warn({ err: receiptError }, "Skipping sale receipt snapshot");
           }
         }
 
@@ -415,7 +416,7 @@ router.post(
       }
       const pgCode = (err as { code?: string }).code;
       const errMsg = err instanceof Error ? err.message : String(err);
-      console.error("[POST /api/sales] Unhandled error (pg code:", pgCode ?? "n/a", "):", err);
+      logger.error({ err, pgCode: pgCode ?? "n/a" }, "[POST /api/sales] Unhandled error");
       const isDev = process.env.NODE_ENV !== "production";
       return res.status(500).json({
         error: "Internal server error",
@@ -489,7 +490,7 @@ router.post("/:id/void", requireAuth, requireRole(...ROUTE_ROLE_ACCESS.saleVoid)
         journalWarning = "Sale voided but the reversal journal entry could not be created automatically. Please post a manual reversal entry in Accounting → Manual Journal.";
       }
     } catch (reversalError) {
-      console.error("Reversal journal entry failed for voided sale:", id, reversalError);
+      logger.error({ err: reversalError, saleId: id }, "Reversal journal entry failed for voided sale");
       journalWarning = "Sale voided but the reversal journal entry could not be created automatically. Please post a manual reversal entry in Accounting → Manual Journal.";
     }
 
@@ -501,7 +502,7 @@ router.post("/:id/void", requireAuth, requireRole(...ROUTE_ROLE_ACCESS.saleVoid)
       entityId: id,
       summary: `Sale voided${reason ? `: ${reason}` : ""}`,
       metadata: { saleId: id, reason: reason ?? null },
-    }).catch((e) => console.error("Audit log failed for void:", e));
+    }).catch((e) => logger.error({ err: e }, "Audit log failed for void"));
 
     if (journalWarning) {
       return res.status(207).json({ success: true, accountingError: true, warning: journalWarning });
@@ -511,7 +512,7 @@ router.post("/:id/void", requireAuth, requireRole(...ROUTE_ROLE_ACCESS.saleVoid)
     const message = err instanceof Error ? err.message : String(err);
     if (message.includes("SALE_NOT_FOUND")) return res.status(404).json({ error: "Sale not found" });
     if (message.includes("SALE_ALREADY_VOIDED")) return res.status(409).json({ error: "Sale already voided" });
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -609,7 +610,7 @@ router.get("/receipts", requireAuth, validateQuery(salesReceiptsQuerySchema), as
       const pageSize = typeof req.query.page_size === "number" ? req.query.page_size : 50;
       return res.json({ receipts: [], page, pageSize, total: 0 });
     }
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -630,7 +631,7 @@ router.patch("/receipts/:saleId", requireAuth, requireRole(...ROUTE_ROLE_ACCESS.
     `;
     return res.json({ receipt });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

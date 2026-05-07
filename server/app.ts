@@ -1,8 +1,20 @@
+import * as Sentry from "@sentry/node";
+import compression from "compression";
 import cors from "cors";
 import express from "express";
 import { randomUUID } from "crypto";
+import pinoHttp from "pino-http";
 
+import { logger } from "./logger";
 import sql from "./db";
+
+// Initialize Sentry before creating the app (no-op if SENTRY_DSN is not set)
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV ?? "development",
+  });
+}
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import { applySecurityHeaders } from "./middleware/security";
 import accountingRoutes from "./routes/accounting";
@@ -43,6 +55,8 @@ export function createApp() {
 
   app.disable("x-powered-by");
 
+  app.use(compression());
+  app.use(pinoHttp({ logger }));
   app.use(express.json({ limit: "2mb" }));
   app.use(applySecurityHeaders);
 
@@ -96,6 +110,10 @@ export function createApp() {
     }
   });
   app.use(notFoundHandler);
+  // Sentry error handler must come after routes and before the custom errorHandler
+  if (process.env.SENTRY_DSN) {
+    Sentry.setupExpressErrorHandler(app);
+  }
   app.use(errorHandler);
 
   return app;

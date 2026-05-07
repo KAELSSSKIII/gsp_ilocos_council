@@ -8,6 +8,7 @@
 import { Router } from "express";
 import sql from "../db";
 import { requireAuth, requireRole } from "../middleware/auth";
+import { logger } from "../logger";
 
 const router = Router();
 const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : "Internal server error";
@@ -113,7 +114,7 @@ router.get(
         voucherExpenses,
       });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -141,7 +142,7 @@ router.get(
       if (!report) return res.json({ report: null });
       return res.json({ report });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -261,7 +262,7 @@ router.post(
 
       return res.json({ report });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -341,7 +342,7 @@ router.get(
 
       return res.json({ ledger });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -406,7 +407,7 @@ router.get(
 
       return res.json({ vouchers, payroll });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }
@@ -486,7 +487,7 @@ router.get(
 
       return res.json({ sales, rentals, receiptVouchers });
     } catch (err: unknown) {
-      console.error(err);
+      logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }
   }

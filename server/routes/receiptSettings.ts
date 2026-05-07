@@ -12,6 +12,7 @@ import { requireAuth, requireRole } from "../middleware/auth";
 import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
 import { validateBody, validateParams } from "../middleware/validate";
 import { idParamSchema, receiptSettingsCreateSchema, receiptSettingsUpdateSchema } from "../validation/schemas";
+import { logger } from "../logger";
 
 const router = Router();
 
@@ -27,7 +28,7 @@ router.get("/", requireAuth, requireRole(...ROUTE_ROLE_ACCESS.receiptSettings), 
     `;
     return res.json({ settings: settings ?? null });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -65,7 +66,7 @@ router.post(
 
     return res.status(201).json({ settings });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -118,7 +119,7 @@ router.patch(
 
     return res.json({ settings });
   } catch (err) {
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });
@@ -169,7 +170,7 @@ router.post("/consume", requireAuth, requireRole("admin", "cashier"), async (_re
     if (message === "RECEIPT_SERIES_EXHAUSTED") {
       return res.status(409).json({ error: "Receipt series exhausted" });
     }
-    console.error(err);
+    logger.error({ err }, "Route error");
     return res.status(500).json({ error: "Internal server error" });
   }
 });

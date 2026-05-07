@@ -30,7 +30,7 @@ import { Badge } from "@/components/ui/badge";
 import { Loader2, FileText, Download, Printer, FileSpreadsheet, FileType } from "lucide-react";
 import { formatCurrency } from "@/utils/format";
 import { readBusinessSettings } from "@/utils/businessSettings";
-import * as XLSX from "xlsx";
+import { downloadXlsx } from "@/lib/xlsxExport";
 
 type ReportRow = {
   id: string;
@@ -513,10 +513,7 @@ export function DCCRPage() {
       .save();
   };
 
-  const handleExportExcel = () => {
-    const wb = XLSX.utils.book_new();
-
-    // ── Summary sheet ──────────────────────────────────────────────────────────
+  const handleExportExcel = async () => {
     const summaryData = [
       ["Daily Cash Collection Report"],
       [`Date: ${formattedDate}`, `Cashier: ${selectedCashierLabel}`],
@@ -530,9 +527,7 @@ export function DCCRPage() {
       ["Receipt Range",       summary.receiptRange],
       ["Receipts Issued",     summary.totalReceiptsIssued],
     ];
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryData), "Summary");
 
-    // ── Transactions sheet ─────────────────────────────────────────────────────
     const txHeaders = ["Receipt No.", "Cashier", "Items", "Sale Amount", "Payment Method", "Date / Time", "Status"];
     const txRows = (reportQuery.data ?? []).map((row) => [
       row.receiptNumber ?? "—",
@@ -543,21 +538,20 @@ export function DCCRPage() {
       new Date(row.createdAt).toLocaleString(),
       row.status === "voided" ? "Void" : "Completed",
     ]);
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([txHeaders, ...txRows]), "Transactions");
 
-    // ── Cashier Breakdown sheet ────────────────────────────────────────────────
-    if (cashierBreakdown.length > 1) {
-      const cbHeaders = ["Cashier", "Total Sales", "Voided", "Net"];
-      const cbRows = cashierBreakdown.map((item) => [
-        item.cashierName,
-        item.completedTotal,
-        item.voidedTotal,
-        item.net,
-      ]);
-      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([cbHeaders, ...cbRows]), "By Cashier");
-    }
+    const sheets = [
+      { name: "Summary", data: summaryData },
+      { name: "Transactions", data: [txHeaders, ...txRows] },
+      ...(cashierBreakdown.length > 1 ? [{
+        name: "By Cashier",
+        data: [
+          ["Cashier", "Total Sales", "Voided", "Net"],
+          ...cashierBreakdown.map((item) => [item.cashierName, item.completedTotal, item.voidedTotal, item.net]),
+        ],
+      }] : []),
+    ];
 
-    XLSX.writeFile(wb, `dccr-${selectedDate}.xlsx`);
+    await downloadXlsx(sheets, `dccr-${selectedDate}.xlsx`);
   };
 
   const handleExportDoc = () => {
