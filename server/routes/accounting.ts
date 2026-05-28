@@ -13,8 +13,10 @@ import { ADMIN_AUDIT_ACTIONS, appendAuditLog } from "../services/auditLog";
 import { logger } from "../logger";
 import {
   accountingMappingsUpdateSchema,
+  idParamSchema,
   manualJournalEntryCreateSchema,
 } from "../validation/schemas";
+import { validateParams } from "../middleware/validate";
 
 const router = Router();
 
@@ -326,6 +328,79 @@ router.get(
 
       return res.json({ data: entries, total, page, page_size });
     } catch (err: unknown) {
+      logger.error({ err }, "Route error");
+      return res.status(500).json({ error: getErrorMessage(err) });
+    }
+  }
+);
+
+router.delete(
+  "/journal-entries/:id",
+  requireAuth,
+  requireRole("admin", "accountant"),
+  validateParams(idParamSchema),
+  async (req, res) => {
+    try {
+      const journalEntry = await sql.begin(async (tx: TransactionClient) => {
+        const txSql = asSqlClient(tx);
+        const [entry] = await txSql<{
+          id: string;
+          entry_number: string;
+          entry_date: string;
+          description: string | null;
+          source_key: string | null;
+          reference_type: string | null;
+          status: string;
+        }[]>`
+          SELECT id, entry_number, entry_date, description, source_key, reference_type, status
+          FROM public.journal_entries
+          WHERE id = ${req.params.id}::uuid
+          LIMIT 1
+        `;
+
+        if (!entry) {
+          return null;
+        }
+
+        const isManualEntry = (entry.source_key ?? "").startsWith("manual:")
+          || entry.reference_type === "manual"
+          || entry.entry_number.startsWith("JE-MAN");
+
+        if (!isManualEntry) {
+          throw new Error("JOURNAL_ENTRY_DELETE_FORBIDDEN");
+        }
+
+        await txSql`
+          DELETE FROM public.journal_entries
+          WHERE id = ${entry.id}::uuid
+        `;
+
+        return entry;
+      });
+
+      if (!journalEntry) {
+        return res.status(404).json({ error: "Journal entry not found" });
+      }
+
+      await appendAuditLog({
+        action: ADMIN_AUDIT_ACTIONS.JOURNAL_ENTRY_DELETED,
+        actorId: req.user!.id,
+        entityType: "journal_entry",
+        entityId: journalEntry.id,
+        summary: `Manual journal entry ${journalEntry.entry_number} was deleted.`,
+        metadata: {
+          display_name: journalEntry.entry_number,
+          entry_date: journalEntry.entry_date,
+          description: journalEntry.description,
+          status: journalEntry.status,
+        },
+      });
+
+      return res.status(204).send();
+    } catch (err: unknown) {
+      if (err instanceof Error && err.message === "JOURNAL_ENTRY_DELETE_FORBIDDEN") {
+        return res.status(409).json({ error: "Only manual journal entries can be deleted." });
+      }
       logger.error({ err }, "Route error");
       return res.status(500).json({ error: getErrorMessage(err) });
     }

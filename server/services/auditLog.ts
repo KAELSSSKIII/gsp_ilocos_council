@@ -27,6 +27,7 @@ export const ADMIN_AUDIT_ACTIONS = {
   ACCOUNT_UPDATED: "account_updated",
   ACCOUNTING_MAPPINGS_UPDATED: "accounting_mappings_updated",
   JOURNAL_ENTRY_CREATED: "journal_entry_created",
+  JOURNAL_ENTRY_DELETED: "journal_entry_deleted",
   SALE_CREATED: "sale_created",
   SALE_VOIDED: "sale_voided",
 } as const;

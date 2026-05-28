@@ -1,7 +1,17 @@
 import { useState } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import api from "@/lib/api";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -13,7 +23,8 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { ChevronLeft, ChevronRight } from "lucide-react";
+import { ChevronLeft, ChevronRight, Trash2 } from "lucide-react";
+import { toast } from "sonner";
 import { formatCurrency, formatDate } from "@/utils/format";
 
 interface JournalEntryLine {
@@ -52,7 +63,9 @@ interface JournalEntriesResponse {
 const PAGE_SIZE = 25;
 
 export function JournalEntriesTab() {
+  const queryClient = useQueryClient();
   const [page, setPage] = useState(0);
+  const [entryPendingDelete, setEntryPendingDelete] = useState<JournalEntry | null>(null);
 
   const { data, isLoading } = useQuery({
     queryKey: ["journal-entries", page],
@@ -70,6 +83,19 @@ export function JournalEntriesTab() {
   const entries = data?.data ?? [];
   const total = data?.total ?? 0;
   const totalPages = Math.ceil(total / PAGE_SIZE);
+  const deleteMutation = useMutation({
+    mutationFn: (id: string) => api.delete(`/accounting/journal-entries/${id}`),
+    onSuccess: () => {
+      toast.success("Journal entry deleted");
+      setEntryPendingDelete(null);
+      queryClient.invalidateQueries({ queryKey: ["journal-entries"] });
+      queryClient.invalidateQueries({ queryKey: ["trial-balance"] });
+      queryClient.invalidateQueries({ queryKey: ["balance-sheet"] });
+    },
+    onError: (error: unknown) => {
+      toast.error(error instanceof Error ? error.message : "Failed to delete journal entry");
+    },
+  });
 
   return (
     <Card className="border-border">
@@ -103,9 +129,24 @@ export function JournalEntriesTab() {
                     </div>
                     <p className="text-sm text-muted-foreground">{entry.description || "No description"}</p>
                   </div>
-                  <div className="text-right text-sm text-muted-foreground">
-                    <p>{formatDate(entry.entry_date)}</p>
-                    <p>{entry.source_key ?? "manual"}</p>
+                  <div className="flex items-start gap-3">
+                    <div className="text-right text-sm text-muted-foreground">
+                      <p>{formatDate(entry.entry_date)}</p>
+                      <p>{entry.source_key ?? "manual"}</p>
+                    </div>
+                    {entry.entry_number.startsWith("JE-MAN") && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon"
+                        className="text-destructive hover:text-destructive"
+                        onClick={() => setEntryPendingDelete(entry)}
+                        disabled={deleteMutation.isPending}
+                        aria-label={`Delete ${entry.entry_number}`}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    )}
                   </div>
                 </div>
 
@@ -144,6 +185,34 @@ export function JournalEntriesTab() {
             ))}
           </div>
         )}
+
+        <AlertDialog open={!!entryPendingDelete} onOpenChange={(open) => !open && setEntryPendingDelete(null)}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete Journal Entry?</AlertDialogTitle>
+              <AlertDialogDescription>
+                {entryPendingDelete
+                  ? `This will permanently delete manual journal entry ${entryPendingDelete.entry_number}. This action cannot be undone.`
+                  : "This action cannot be undone."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={deleteMutation.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                disabled={deleteMutation.isPending || !entryPendingDelete}
+                onClick={(event) => {
+                  event.preventDefault();
+                  if (entryPendingDelete) {
+                    deleteMutation.mutate(entryPendingDelete.id);
+                  }
+                }}
+              >
+                {deleteMutation.isPending ? "Deleting..." : "Delete"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
 
         {totalPages > 1 && (
           <div className="flex items-center justify-between pt-4">
