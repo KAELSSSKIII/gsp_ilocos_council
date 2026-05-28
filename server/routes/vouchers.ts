@@ -16,6 +16,20 @@ import { logger } from "../logger";
 
 const router = Router();
 const getErrorMessage = (error: unknown) => error instanceof Error ? error.message : "Internal server error";
+const normalizeVoucherType = (voucherType: string) => {
+  switch (voucherType) {
+    case "cash_voucher":
+    case "check_voucher":
+    case "accounts_payable":
+      return "payment";
+    case "accounts_receivable":
+      return "receipt";
+    case "journal_voucher":
+      return "journal";
+    default:
+      return voucherType;
+  }
+};
 
 // ── GET /api/vouchers ─────────────────────────────────────────────────────────
 router.get(
@@ -67,6 +81,7 @@ router.post(
     try {
       const d      = req.body;
       const userId = req.user!.id;
+      const voucherType = normalizeVoucherType(d.voucher_type);
 
       const voucherNumber = d.voucher_number ?? `VCH-${Date.now()}`;
 
@@ -77,7 +92,7 @@ router.post(
           status, created_by
         ) VALUES (
           ${voucherNumber},
-          ${d.voucher_type},
+          ${voucherType},
           ${d.amount},
           ${d.account_id ?? null},
           ${d.reference_id   ?? null},

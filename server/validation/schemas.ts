@@ -333,7 +333,17 @@ export const activeCartCreateSchema = z.object({
 });
 
 export const voucherCreateSchema = z.object({
-  voucher_type:   z.enum(["cash_voucher", "check_voucher", "journal_voucher", "accounts_payable", "accounts_receivable"]),
+  voucher_type:   z.enum([
+    "payment",
+    "receipt",
+    "journal",
+    "payroll",
+    "cash_voucher",
+    "check_voucher",
+    "journal_voucher",
+    "accounts_payable",
+    "accounts_receivable",
+  ]),
   amount:         z.coerce.number().finite().min(0),
   description:    z.string().trim().min(1).max(1000),
   voucher_number: z.string().trim().max(100).optional(),

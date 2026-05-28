@@ -49,11 +49,18 @@ export function ManualJournalEntryTab() {
   });
 
   const accounts = (data ?? []).filter((account) => account.is_active);
+  const activeLineCount = lines.filter((line) => line.account_id).length;
   const totals = useMemo(() => {
     const debit = lines.reduce((sum, line) => sum + Number(line.debit || 0), 0);
     const credit = lines.reduce((sum, line) => sum + Number(line.credit || 0), 0);
     return { debit, credit, difference: debit - credit };
   }, [lines]);
+  const isBalanced = Math.round(totals.difference * 100) === 0;
+  const validationMessages = [
+    description.trim().length === 0 ? "Add an entry description." : null,
+    activeLineCount < 2 ? "Select at least two account lines." : null,
+    !isBalanced ? "Debits and credits must balance before posting." : null,
+  ].filter((message): message is string => !!message);
 
   const createMutation = useMutation({
     mutationFn: () => api.post("/accounting/journal-entries", {
@@ -90,8 +97,8 @@ export function ManualJournalEntryTab() {
   };
 
   const canSubmit = description.trim().length > 0
-    && lines.filter((line) => line.account_id).length >= 2
-    && Math.round(totals.difference * 100) === 0;
+    && activeLineCount >= 2
+    && isBalanced;
 
   return (
     <Card className="border-border">
@@ -210,10 +217,17 @@ export function ManualJournalEntryTab() {
             <Plus className="mr-2 h-4 w-4" />
             Add Line
           </Button>
-          <Button onClick={() => createMutation.mutate()} disabled={!canSubmit || createMutation.isPending}>
-            <Save className="mr-2 h-4 w-4" />
-            {createMutation.isPending ? "Posting..." : "Post Journal Entry"}
-          </Button>
+          <div className="flex flex-col items-end gap-2">
+            {!canSubmit && validationMessages.length > 0 && (
+              <p className="text-right text-sm text-destructive">
+                {validationMessages[0]}
+              </p>
+            )}
+            <Button onClick={() => createMutation.mutate()} disabled={!canSubmit || createMutation.isPending}>
+              <Save className="mr-2 h-4 w-4" />
+              {createMutation.isPending ? "Posting..." : "Post Journal Entry"}
+            </Button>
+          </div>
         </div>
       </CardContent>
     </Card>
