@@ -10,21 +10,27 @@ import { useSessionStore } from "@/store/sessionStore";
 
 const BASE = import.meta.env.VITE_API_BASE_URL ?? "/api";
 
-async function request<T = unknown>(path: string, options: RequestInit = {}): Promise<T> {
+type RequestOptions = RequestInit & {
+  redirectOnUnauthorized?: boolean;
+};
+
+async function request<T = unknown>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { redirectOnUnauthorized = true, ...requestOptions } = options;
   const res = await fetch(`${BASE}${path}`, {
-    ...options,
+    ...requestOptions,
     credentials: "include",
     headers: {
       "Content-Type": "application/json",
-      ...(options.headers as Record<string, string>),
+      ...(requestOptions.headers as Record<string, string>),
     },
   });
 
   if (!res.ok) {
     if (res.status === 401) {
       useSessionStore.getState().reset();
-      window.location.href = "/login";
-      return undefined as T;
+      if (redirectOnUnauthorized) {
+        window.location.href = "/login";
+      }
     }
     const body = await res.json().catch(() => ({ error: res.statusText }));
     const message = body?.detail ?? body?.error ?? "Request failed";
@@ -72,7 +78,11 @@ export const api = {
 
 export const authApi = {
   async login(username: string, password: string) {
-    return api.post<{ profile: Record<string, unknown> }>("/auth/login", { username, password });
+    return request<{ profile: Record<string, unknown> }>("/auth/login", {
+      method: "POST",
+      body: JSON.stringify({ username, password }),
+      redirectOnUnauthorized: false,
+    });
   },
 
   async me() {

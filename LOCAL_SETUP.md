@@ -117,25 +117,20 @@ psql -U gsp_user -d gsp_db
 Then run inside `psql`:
 
 ```sql
--- Insert user (the hash below is for the password 'password' — change this!)
-INSERT INTO public.users (id, email, password_hash)
-VALUES (
-  gen_random_uuid(),
-  'admin@example.com',
-  '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi'
-);
-
--- Get the new user's ID
-SELECT id FROM public.users WHERE email = 'admin@example.com';
-
--- Insert their profile — paste the UUID from above where it says <id>
-INSERT INTO public.profiles (id, full_name, email, role)
-VALUES (
-  '<id>',
-  'Admin User',
-  'admin@example.com',
-  'admin'
-);
+-- Insert user and profile in one go.
+-- The hash below is for the password 'password' — change this in real use.
+WITH new_user AS (
+  INSERT INTO public.users (username, email, password_hash)
+  VALUES (
+    'admin',
+    'admin@example.com',
+    '$2a$10$92IXUNpkjO0rOQ5byMi.Ye4oKoEa3Ro9llC/.og/at2.uheWG/igi'
+  )
+  RETURNING id, username, email
+)
+INSERT INTO public.profiles (id, full_name, username, email, role)
+SELECT id, 'Admin User', username, email, 'admin'
+FROM new_user;
 
 \q
 ```
@@ -210,7 +205,7 @@ curl http://localhost:3001/health
 # Test login (replace credentials with what you created in Step 5)
 curl -X POST http://localhost:3001/api/auth/login \
   -H "Content-Type: application/json" \
-  -d "{\"email\":\"admin@example.com\",\"password\":\"password\"}"
+  -d "{\"username\":\"admin\",\"password\":\"password\"}"
 # → {"token":"eyJ...","profile":{...}}
 ```
 
@@ -261,7 +256,7 @@ curl http://localhost:3001/health
 # 3. Test login via API
 curl -X POST http://localhost:3001/api/auth/login \
   -H "Content-Type: application/json" \
-  -d "{\"email\":\"admin@example.com\",\"password\":\"password\"}"
+  -d "{\"username\":\"admin\",\"password\":\"password\"}"
 
 # 4. Open the app in browser
 # http://localhost:8080/login — should log in and show the dashboard with real data
@@ -633,7 +628,7 @@ docker exec -i gsp_postgres psql -U gsp_user -d gsp_db < backup-20260315.sql
 | Container shows `unhealthy` | Run `docker logs gsp_backend` to see the error |
 | `port is already allocated` | Port 80 is in use. Change `FRONTEND_PORT=8080` in `.env.docker` and re-run `up -d --build` |
 | Can't access from other computers | Check Windows Firewall — allow inbound TCP on port 80 (or 8080): `netsh advfirewall firewall add rule name="GSP" dir=in action=allow protocol=TCP localport=80` |
-| App loads but login fails | Admin user not created yet — complete Step 6 |
+| App loads but login fails | Admin user not created yet, or you are using email instead of username — complete Step 5 and log in with `username` |
 | `permission denied for table ...` | Run the GRANT commands in Step 5 |
 | Database data lost after `down` | Data is in the `postgres_data` volume — only `down -v` deletes volumes. Never use `-v` unless intentionally wiping data |
 | Containers don't auto-start after reboot | Make sure "Start Docker Desktop when you log in" is enabled (Step 9) and Windows auto-login is configured |

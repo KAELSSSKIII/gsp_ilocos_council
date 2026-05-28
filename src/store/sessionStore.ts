@@ -27,7 +27,7 @@ type SessionState = {
   setBranch: (branchId: string | null) => void;
   setLoading: (value: boolean) => void;
   reset: () => void;
-  fetchProfile: () => Promise<void>;
+  fetchProfile: () => Promise<Profile | undefined>;
 };
 
 export const useSessionStore = create<SessionState>()(
@@ -47,15 +47,18 @@ export const useSessionStore = create<SessionState>()(
 
         try {
           const { profile } = await authApi.me();
+          const normalizedProfile = profile as unknown as Profile;
 
           set({
-            profile: profile as unknown as Profile,
+            profile: normalizedProfile,
             role: (profile?.role as UserRole | undefined) ?? undefined,
             branchId: (profile?.branch as string | null) ?? null,
             loading: false,
           });
+          return normalizedProfile;
         } catch {
           set({ profile: undefined, role: undefined, branchId: null, loading: false });
+          return undefined;
         }
       },
     }),

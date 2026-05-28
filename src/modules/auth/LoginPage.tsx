@@ -141,17 +141,17 @@ export function LoginPage() {
 
     try {
       await authApi.login(username.trim(), password);
-      await fetchProfile();
-      const currentProfile = useSessionStore.getState().profile;
-      if (currentProfile) {
-        appendAuditEntry({
-          action: "login",
-          actorName: currentProfile.full_name || currentProfile.username,
-          actorEmail: currentProfile.username,
-          actorRole: currentProfile.role,
-          summary: "Signed in to the workspace.",
-        });
+      const currentProfile = await fetchProfile();
+      if (!currentProfile) {
+        throw new Error("Login succeeded but the session could not be loaded. Please try again.");
       }
+      appendAuditEntry({
+        action: "login",
+        actorName: currentProfile.full_name || currentProfile.username,
+        actorEmail: currentProfile.username,
+        actorRole: currentProfile.role,
+        summary: "Signed in to the workspace.",
+      });
       setSignedIn(true);
       window.setTimeout(() => {
         navigate(from, { replace: true });
