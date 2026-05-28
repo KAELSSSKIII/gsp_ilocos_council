@@ -377,8 +377,14 @@ router.get(
         LEFT JOIN public.profiles ap  ON ap.id = v.approved_by
         LEFT JOIN public.chart_of_accounts coa ON coa.id = v.account_id
         WHERE v.voucher_type IN ('payment','payroll','journal')
+          AND v.status = 'posted'
           AND v.created_at >= ${from}
           AND v.created_at <= ${to}
+          AND EXISTS (
+            SELECT 1
+            FROM public.journal_entries je
+            WHERE je.source_key = ('voucher:posted:' || v.id::text)
+          )
         ORDER BY v.created_at
       `;
 
@@ -402,6 +408,12 @@ router.get(
         LEFT JOIN public.employees e ON e.id = py.employee_id
         WHERE py.period_start >= ${from.toISOString().slice(0,10)}
           AND py.period_end   <= ${to.toISOString().slice(0,10)}
+          AND py.status = 'paid'
+          AND EXISTS (
+            SELECT 1
+            FROM public.journal_entries je
+            WHERE je.source_key = ('payroll:paid:' || py.id::text)
+          )
         ORDER BY py.period_start, e.full_name
       `;
 

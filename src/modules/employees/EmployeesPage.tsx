@@ -55,6 +55,11 @@ function getErrorMessage(error: unknown, fallback: string) {
   return error instanceof Error ? error.message : fallback;
 }
 
+function toNullableString(value: string | null) {
+  const trimmed = (value ?? "").trim();
+  return trimmed.length > 0 ? trimmed : null;
+}
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 export function EmployeesPage() {
@@ -131,10 +136,25 @@ export function EmployeesPage() {
       toast.error("Employee #, name, position, and hire date are required");
       return;
     }
+
+    const payload = {
+      employee_number: form.employee_number.trim(),
+      full_name: form.full_name.trim(),
+      position: form.position.trim(),
+      department: toNullableString(form.department),
+      branch: toNullableString(form.branch),
+      email: toNullableString(form.email),
+      phone: toNullableString(form.phone),
+      address: toNullableString(form.address),
+      hire_date: form.hire_date,
+      salary: form.salary,
+      is_active: form.is_active,
+    };
+
     if (editTarget) {
-      updateMutation.mutate({ id: editTarget.id, body: form });
+      updateMutation.mutate({ id: editTarget.id, body: payload });
     } else {
-      createMutation.mutate(form);
+      createMutation.mutate(payload);
     }
   };
 
